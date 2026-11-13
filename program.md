@@ -7,7 +7,8 @@ así que sirve para ver el loop completo sin GPU.
 
 1. La etiqueta de corrida la da el humano (o el loop externo) en el mensaje inicial.
    La rama `autoresearch/<etiqueta>` no debe existir.
-2. `git checkout -b autoresearch/<etiqueta>` desde el commit actual.
+2. `git checkout -b autoresearch/<etiqueta>` desde el commit actual. Si ya se está en
+   esa rama (el loop externo la crea con un worktree), seguir en ella.
 3. Leer los archivos del alcance:
    - `prepare.py`: fijo. Datos, presupuesto (`TIEMPO_SEGUNDOS`) y la función `evaluar`.
    - `train.py`: el archivo que se modifica.
