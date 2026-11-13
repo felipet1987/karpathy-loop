@@ -1,14 +1,18 @@
 // Uso:
 //   node src/cli.ts interno [--iteraciones 10] [--minutos 15] [--etiqueta nov13]
 //   node src/cli.ts externo [--versiones 4] [--iteraciones 8] [--minutos 10] [--etiqueta nov13]
-// Cada iteración llama a un agente real y consume cuota.
+// Cada iteración llama a Claude Code (`claude -p`) al menos dos veces y consume cuota.
+// Composition root: único lugar donde se construyen los adaptadores y se cablean al núcleo.
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { createActor, type AnyActorLogic } from "xstate";
 import { BitacoraTsv } from "./adaptadores/bitacora-tsv.ts";
+import { ChecksUv } from "./adaptadores/checks-uv.ts";
+import { ClaudeCli } from "./adaptadores/claude-cli.ts";
+import { EntrenadorUv } from "./adaptadores/entrenador-uv.ts";
 import { RepositorioGit } from "./adaptadores/repositorio-git.ts";
-import { agente, checks, entrenador } from "./agentes.ts";
+import { SalidaRecortada } from "./adaptadores/salida-recortada.ts";
 import { crearMaquinaExterna, ENCABEZADO_HISTORIAL } from "./nucleo/externo.ts";
 import { crearMaquinaInterna, ENCABEZADO_RESULTADOS } from "./nucleo/interno.ts";
 
@@ -45,7 +49,15 @@ async function correr(logica: AnyActorLogic, input: unknown) {
 }
 
 const base = repositorio.commitCorto();
-const puertos = { agente, checks, entrenador };
+const puertos = {
+  agente: new ClaudeCli(
+    process.env.KL_MODELO ?? "claude-opus-5-5",
+    Number(process.env.KL_PRESUPUESTO_AGENTE_USD ?? 2), // por invocación
+    15 * 60_000,
+  ),
+  checks: new SalidaRecortada(new ChecksUv(60_000), 4_000), // lo recortado vuelve al agente
+  entrenador: new EntrenadorUv(60_000), // 20 s de presupuesto + arranque; más que esto es crash
+};
 if (positionals[0] === "interno") {
   const worktree = repositorio.worktree(values.etiqueta, base);
   await correr(crearMaquinaInterna(puertos), {
