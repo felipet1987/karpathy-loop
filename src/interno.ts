@@ -7,6 +7,10 @@
 //                    └── siguiente (¿queda presupuesto?) ← conservando | revirtiendo ← entrenando
 import { assign, fromPromise, setup } from "xstate";
 import { cambiados, git, registrar } from "./git.ts";
+import { CHECKS, EDITABLE } from "./nucleo/encargos.ts";
+import type { Medicion, ResultadoChecks } from "./nucleo/puertos.ts";
+
+export { CHECKS, EDITABLE, type Medicion, type ResultadoChecks };
 
 export interface EntradaInterno {
   dir: string; // worktree donde se experimenta
@@ -34,13 +38,6 @@ export interface Propuesta {
   descripcion: string;
   costoUsd: number;
 }
-export interface ResultadoChecks {
-  ok: boolean;
-  salida: string;
-}
-export interface Medicion {
-  valLoss: number;
-}
 
 interface Contexto extends EntradaInterno {
   finEn: number;
@@ -54,9 +51,6 @@ interface Contexto extends EntradaInterno {
   medicion: Medicion | null;
 }
 
-/** Lo único que el agente puede tocar: train.py al construir, checks/ al escribir checks. */
-export const EDITABLE = "train.py";
-export const CHECKS = "checks/";
 /** Intentos de construcción por iteración antes de rendirse con los checks. */
 export const INTENTOS_BUILD = 3;
 
