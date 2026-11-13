@@ -26,7 +26,7 @@ export function crearWorktree(raiz: string, etiqueta: string, base: string): str
 export interface Fila {
   commit: string;
   valLoss: number;
-  status: "keep" | "discard" | "crash" | "fuera_de_alcance";
+  status: "keep" | "discard" | "crash" | "fuera_de_alcance" | "checks_fallidos";
   descripcion: string;
 }
 
