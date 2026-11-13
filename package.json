@@ -1,0 +1,24 @@
+{
+  "name": "karpathy-loop",
+  "version": "0.1.0",
+  "description": "Loop interno y loop externo de autoresearch como máquinas XState; el agente solo propone cambios",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "interno": "node src/cli.ts interno",
+    "externo": "node src/cli.ts externo",
+    "test": "node --test \"test/*.test.ts\"",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.296",
+    "xstate": "^5.33.2"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "typescript": "^7.0.2"
+  }
+}

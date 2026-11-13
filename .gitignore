@@ -3,3 +3,10 @@ run.log
 .venv/
 __pycache__/
 uv.lock
+node_modules/
+meta/
+.trabajo/
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/
+.ignore
