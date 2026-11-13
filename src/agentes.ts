@@ -1,91 +1,13 @@
-// Actores reales: entrenar y correr checks con uv, y los agentes con Claude Code (`claude -p`).
-import { execFile, spawn } from "node:child_process";
-import { createWriteStream, existsSync, readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
-import { promisify } from "node:util";
-import { CHECKS } from "./nucleo/encargos.ts";
-import type { Agente, Checks, Encargo, Entrenador, Medicion, ResultadoChecks } from "./nucleo/puertos.ts";
+// Puertos reales. El paso 4 mueve esta construcción a cli.ts y borra el archivo.
+import { ChecksUv } from "./adaptadores/checks-uv.ts";
+import { ClaudeCli } from "./adaptadores/claude-cli.ts";
+import { EntrenadorUv } from "./adaptadores/entrenador-uv.ts";
+import { SalidaRecortada } from "./adaptadores/salida-recortada.ts";
 
-const ejecutar = promisify(execFile);
-
-const MODELO = process.env.KL_MODELO ?? "claude-opus-5-5";
-const PRESUPUESTO_AGENTE_USD = Number(process.env.KL_PRESUPUESTO_AGENTE_USD ?? 2); // por invocación
-const LIMITE_AGENTE_MS = 15 * 60_000;
-const LIMITE_ENTRENAMIENTO_MS = 60_000; // 20 s de presupuesto + arranque; más que esto es crash
-const LIMITE_CHECK_MS = 60_000;
-const MAX_SALIDA = 4_000; // caracteres de salida de checks que vuelven al agente
-
-/** Corre `uv run train.py > run.log 2>&1` y lee val_loss del log. */
-export const entrenador: Entrenador = {
-  medicion: (dir) =>
-    new Promise<Medicion>((resolve, reject) => {
-      const log = createWriteStream(join(dir, "run.log"));
-      const proc = spawn("uv", ["run", "train.py"], { cwd: dir });
-      proc.stdout.pipe(log);
-      proc.stderr.pipe(log);
-      const reloj = setTimeout(() => proc.kill("SIGKILL"), LIMITE_ENTRENAMIENTO_MS);
-      proc.on("close", (codigo) => {
-        clearTimeout(reloj);
-        log.end(() => {
-          const m = readFileSync(join(dir, "run.log"), "utf8").match(/^val_loss:\s+(\S+)/m);
-          const valLoss = m ? Number(m[1]) : NaN;
-          if (codigo === 0 && Number.isFinite(valLoss)) resolve({ valLoss });
-          else reject(new Error(`entrenamiento fallido (código ${codigo})`));
-        });
-      });
-    }),
-};
-
-/** Corre cada `checks/*.py` con `uv run python`; pasan si todos salen con 0. */
-export const checks: Checks = {
-  async resultado(dir): Promise<ResultadoChecks> {
-  const carpeta = join(dir, CHECKS);
-  const archivos = existsSync(carpeta) ? readdirSync(carpeta).filter((a) => a.endsWith(".py")).sort() : [];
-  if (archivos.length === 0) return { ok: false, salida: `no hay checks en ${CHECKS}` };
-  const salidas: string[] = [];
-  let ok = true;
-  for (const archivo of archivos) {
-    const ruta = join(CHECKS, archivo);
-    try {
-      const { stdout, stderr } = await ejecutar("uv", ["run", "python", ruta], {
-        cwd: dir,
-        timeout: LIMITE_CHECK_MS,
-      });
-      salidas.push(`PASA ${ruta}\n${stdout}${stderr}`);
-    } catch (e) {
-      ok = false;
-      const { stdout = "", stderr = "", code, killed } = e as { stdout?: string; stderr?: string; code?: unknown; killed?: boolean };
-      salidas.push(`FALLA ${ruta} (${killed ? "timeout" : `código ${code}`})\n${stdout}${stderr}`);
-    }
-  }
-  return { ok, salida: salidas.join("\n").slice(-MAX_SALIDA) };
-  },
-};
-
-/** Una invocación headless de Claude Code; el prompt va por stdin. */
-async function correrClaude(encargo: Encargo): Promise<{ texto: string; costoUsd: number }> {
-  const herramientas = encargo.herramientas.join(",");
-  const proceso = ejecutar(
-    "claude",
-    [
-      "-p",
-      "--output-format", "json",
-      "--system-prompt", encargo.systemPrompt,
-      "--tools", herramientas,
-      "--allowedTools", herramientas,
-      "--permission-mode", "dontAsk", // no hay nadie para aprobar: lo que no está permitido se niega
-      "--setting-sources", "", // sin hooks ni CLAUDE.md del usuario
-      "--no-session-persistence",
-      "--model", MODELO,
-      "--max-budget-usd", String(PRESUPUESTO_AGENTE_USD),
-    ],
-    { cwd: encargo.cwd, timeout: LIMITE_AGENTE_MS, maxBuffer: 64 * 1024 * 1024 },
-  );
-  proceso.child.stdin!.end(encargo.prompt);
-  const { stdout } = await proceso;
-  const r = JSON.parse(stdout) as { subtype?: string; is_error?: boolean; result?: string; total_cost_usd?: number };
-  if (r.is_error || r.subtype !== "success") throw new Error(`${r.subtype}: ${r.result ?? ""}`);
-  return { texto: (r.result ?? "").trim(), costoUsd: r.total_cost_usd ?? 0 };
-}
-
-export const agente: Agente = { respuesta: correrClaude };
+export const agente = new ClaudeCli(
+  process.env.KL_MODELO ?? "claude-opus-5-5",
+  Number(process.env.KL_PRESUPUESTO_AGENTE_USD ?? 2),
+  15 * 60_000,
+);
+export const checks = new SalidaRecortada(new ChecksUv(60_000), 4_000);
+export const entrenador = new EntrenadorUv(60_000);
