@@ -2,13 +2,18 @@
 //   node src/cli.ts interno [--iteraciones 10] [--minutos 15] [--etiqueta nov13]
 //   node src/cli.ts externo [--versiones 4] [--iteraciones 8] [--minutos 10] [--etiqueta nov13]
 // Cada iteración llama a un agente real y consume cuota.
+import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { createActor, type AnyActorLogic } from "xstate";
-import { maquinaExternaReal, maquinaInternaReal } from "./agentes.ts";
-import { cambiados, crearWorktree, git } from "./git.ts";
+import { BitacoraTsv } from "./adaptadores/bitacora-tsv.ts";
+import { RepositorioGit } from "./adaptadores/repositorio-git.ts";
+import { agente, checks, entrenador } from "./agentes.ts";
+import { crearMaquinaExterna, ENCABEZADO_HISTORIAL } from "./nucleo/externo.ts";
+import { crearMaquinaInterna, ENCABEZADO_RESULTADOS } from "./nucleo/interno.ts";
 
-const raiz = git(process.cwd(), "rev-parse", "--show-toplevel");
+const raiz = execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
+const repositorio = new RepositorioGit(raiz);
 const { positionals, values } = parseArgs({
   allowPositionals: true,
   options: {
@@ -19,7 +24,7 @@ const { positionals, values } = parseArgs({
   },
 });
 
-if (cambiados(raiz).length > 0) {
+if (repositorio.tocados().length > 0) {
   console.error("El repo tiene cambios sin commitear; las máquinas hacen checkout y los perderían.");
   process.exit(1);
 }
@@ -39,17 +44,26 @@ async function correr(logica: AnyActorLogic, input: unknown) {
   console.log(JSON.stringify(fin, null, 2));
 }
 
-const base = git(raiz, "rev-parse", "HEAD");
+const base = repositorio.commitCorto();
+const puertos = { agente, checks, entrenador };
 if (positionals[0] === "interno") {
-  await correr(maquinaInternaReal, {
-    dir: crearWorktree(raiz, values.etiqueta, base),
-    rutaPrograma: join(raiz, "program.md"),
+  const worktree = repositorio.worktree(values.etiqueta, base);
+  await correr(crearMaquinaInterna(puertos), {
+    repositorio: worktree,
+    bitacora: new BitacoraTsv(join(worktree.directorio(), "results.tsv"), ENCABEZADO_RESULTADOS),
+    programa: repositorio.contenido("program.md"),
     maxIteraciones: Number(values.iteraciones ?? 10),
     minutos: Number(values.minutos ?? 15),
   });
 } else if (positionals[0] === "externo") {
-  await correr(maquinaExternaReal, {
-    raiz,
+  const meta = join(raiz, "meta");
+  const maquina = crearMaquinaExterna({
+    ...puertos,
+    repositorio,
+    historial: new BitacoraTsv(join(meta, "historial.tsv"), ENCABEZADO_HISTORIAL),
+    resultados: (v) => new BitacoraTsv(join(meta, `resultados-v${v}.tsv`), ENCABEZADO_RESULTADOS),
+  });
+  await correr(maquina, {
     base,
     prefijo: values.etiqueta,
     versiones: Number(values.versiones ?? 4),

@@ -1,21 +1,20 @@
-// Las dos máquinas con actores falsos: sin agentes reales ni entrenamiento.
+// Las dos máquinas con agentes, checks y entrenamiento falsos; git y las bitácoras son reales.
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { createActor, fromPromise, toPromise } from "xstate";
-import { maquinaExterna } from "../src/externo.ts";
-import { git } from "../src/git.ts";
-import {
-  maquinaInterna,
-  type EntradaConstruir,
-  type EntradaEscribirChecks,
-  type Propuesta,
-  type ResultadoChecks,
-} from "../src/interno.ts";
+import { createActor, toPromise } from "xstate";
+import { BitacoraTsv } from "../src/adaptadores/bitacora-tsv.ts";
+import { RepositorioGit } from "../src/adaptadores/repositorio-git.ts";
+import { crearMaquinaExterna, ENCABEZADO_HISTORIAL } from "../src/nucleo/externo.ts";
+import { crearMaquinaInterna, ENCABEZADO_RESULTADOS } from "../src/nucleo/interno.ts";
+import type { Agente, Checks, Encargo, Entrenador } from "../src/nucleo/puertos.ts";
 
 const PROGRAMA = "# programa\nGANANCIA=0.1\n<!-- protegido -->\nreglas\n<!-- fin protegido -->\n";
+
+const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
 
 function repoDePrueba(): string {
   const raiz = mkdtempSync(join(tmpdir(), "karpathy-loop-"));
@@ -24,48 +23,69 @@ function repoDePrueba(): string {
   git(raiz, "config", "user.name", "test");
   writeFileSync(join(raiz, "train.py"), "print('base')\n");
   writeFileSync(join(raiz, "program.md"), PROGRAMA);
+  writeFileSync(join(raiz, "meta-prompt.md"), "# meta\n");
   writeFileSync(join(raiz, ".gitignore"), "results.tsv\nrun.log\nmeta/\n.trabajo/\n");
   git(raiz, "add", "-A");
   git(raiz, "commit", "-qm", "base");
   return raiz;
 }
 
-const filas = (dir: string) =>
-  readFileSync(join(dir, "results.tsv"), "utf8").trim().split("\n").slice(1).map((l) => l.split("\t"));
+const filas = (ruta: string) =>
+  readFileSync(ruta, "utf8").trim().split("\n").slice(1).map((l) => l.split("\t"));
+
+/** Agente falso: una función por fase, que edita el directorio del encargo. */
+const agenteFalso = (fases: Partial<Record<Encargo["fase"], (e: Encargo) => [string, number]>>): Agente => ({
+  async respuesta(encargo) {
+    const [texto, costoUsd] = fases[encargo.fase]!(encargo);
+    return { texto, costoUsd };
+  },
+});
 
 test("loop interno: write checks → build → pass checks; conserva, revierte, reintenta y rechaza", async () => {
   const dir = repoDePrueba();
   let n = 0;
-  const escribirChecks = fromPromise<Propuesta, EntradaEscribirChecks>(async ({ input }) => {
-    n++;
-    mkdirSync(join(input.dir, "checks"), { recursive: true });
-    writeFileSync(join(input.dir, "checks", `c${n}.py`), `# check ${n}\n`);
-    if (n === 3) appendFileSync(join(input.dir, "train.py"), "# antes de tiempo\n"); // fuera de alcance
-    return { descripcion: `cambio ${n}`, costoUsd: 1 };
-  });
-  const fallos: (string | null)[] = [];
-  const construir = fromPromise<{ costoUsd: number }, EntradaConstruir>(async ({ input }) => {
-    fallos.push(input.fallo);
-    appendFileSync(join(input.dir, "train.py"), `# ${input.descripcion}\n`);
-    if (n === 4) appendFileSync(join(input.dir, "checks", "c4.py"), "# debilitado\n"); // toca los checks
-    return { costoUsd: 0.5 };
+  const fallos: string[] = [];
+  const agente = agenteFalso({
+    checks: (e) => {
+      n++;
+      mkdirSync(join(e.cwd, "checks"), { recursive: true });
+      writeFileSync(join(e.cwd, "checks", `c${n}.py`), `# check ${n}\n`);
+      if (n === 3) appendFileSync(join(e.cwd, "train.py"), "# antes de tiempo\n"); // fuera de alcance
+      return [`pensando...\ncambio ${n}`, 1];
+    },
+    build: (e) => {
+      if (e.prompt.includes("assert falló")) fallos.push(e.prompt); // reintento con la salida
+      appendFileSync(join(e.cwd, "train.py"), `# cambio ${n}\n`);
+      if (n === 4) appendFileSync(join(e.cwd, "checks", "c4.py"), "# debilitado\n"); // toca los checks
+      return ["listo", 0.5];
+    },
   });
   // Iteraciones 1, 2 y 7 pasan; la 5 pasa al tercer intento; la 6 agota los intentos.
-  const checks = [true, true, false, false, true, false, false, false, true];
-  const correrChecks = fromPromise<ResultadoChecks, { dir: string }>(async () => {
-    const ok = checks.shift()!;
-    return { ok, salida: ok ? "" : "assert falló" };
-  });
+  const resultados = [true, true, false, false, true, false, false, false, true];
+  const checks: Checks = {
+    async resultado() {
+      const ok = resultados.shift()!;
+      return { ok, salida: ok ? "" : "assert falló" };
+    },
+  };
   const valores: (number | Error)[] = [1.0, 0.9, 0.95, new Error("crash"), 0.8];
-  const entrenar = fromPromise<{ valLoss: number }, { dir: string }>(async () => {
-    const v = valores.shift()!;
-    if (v instanceof Error) throw v;
-    return { valLoss: v };
-  });
+  const entrenador: Entrenador = {
+    async medicion() {
+      const v = valores.shift()!;
+      if (v instanceof Error) throw v;
+      return { valLoss: v };
+    },
+  };
 
-  const maquina = maquinaInterna.provide({ actors: { escribirChecks, construir, correrChecks, entrenar } });
-  const actor = createActor(maquina, {
-    input: { dir, rutaPrograma: join(dir, "program.md"), maxIteraciones: 7, minutos: 5 },
+  const tsv = join(dir, "results.tsv");
+  const actor = createActor(crearMaquinaInterna({ agente, checks, entrenador }), {
+    input: {
+      repositorio: new RepositorioGit(dir),
+      bitacora: new BitacoraTsv(tsv, ENCABEZADO_RESULTADOS),
+      programa: PROGRAMA,
+      maxIteraciones: 7,
+      minutos: 5,
+    },
   });
   actor.start();
   const salida = await toPromise(actor);
@@ -73,10 +93,19 @@ test("loop interno: write checks → build → pass checks; conserva, revierte, 
   // 7 escrituras de checks a 1 + 10 construcciones a 0.5 (1, 1, 1, 3, 3, 1).
   assert.deepEqual(salida, { lineaBase: 1.0, mejor: 0.8, iteraciones: 7, costoUsd: 12 });
   assert.deepEqual(
-    filas(dir).map((f) => f[2]),
-    ["keep", "keep", "discard", "fuera_de_alcance", "fuera_de_alcance", "crash", "checks_fallidos", "keep"],
+    filas(tsv).map((f) => [f[2], f[3]]),
+    [
+      ["keep", "linea base"],
+      ["keep", "cambio 1"],
+      ["discard", "cambio 2"],
+      ["fuera_de_alcance", "cambio 3"],
+      ["fuera_de_alcance", "cambio 4"],
+      ["crash", "cambio 5"],
+      ["checks_fallidos", "cambio 6"],
+      ["keep", "cambio 7"],
+    ],
   );
-  assert.equal(fallos.filter((f) => f === "assert falló").length, 4); // reintentos con la salida
+  assert.equal(fallos.length, 4); // 2 reintentos en la iteración 5 y 2 en la 6
   const codigo = readFileSync(join(dir, "train.py"), "utf8");
   assert.match(codigo, /cambio 1/);
   assert.match(codigo, /cambio 7/);
@@ -88,39 +117,48 @@ test("loop interno: write checks → build → pass checks; conserva, revierte, 
 
 test("loop externo: conserva el program.md que rinde más y bloquea el bloque protegido", async () => {
   const raiz = repoDePrueba();
-  // El falso entrenamiento rinde según la GANANCIA escrita en el program.md vigente.
-  const entrenar = fromPromise<{ valLoss: number }, { dir: string }>(async ({ input }) => {
-    const base = !readFileSync(join(input.dir, "train.py"), "utf8").includes("# cambio");
-    const g = Number(readFileSync(join(raiz, "program.md"), "utf8").match(/GANANCIA=(\S+)/)![1]);
-    return { valLoss: base ? 1.0 : 1.0 - g };
-  });
-  const escribirChecks = fromPromise<Propuesta, EntradaEscribirChecks>(async ({ input }) => {
-    mkdirSync(join(input.dir, "checks"), { recursive: true });
-    writeFileSync(join(input.dir, "checks", "c.py"), "# check\n");
-    return { descripcion: "cambio", costoUsd: 0 };
-  });
-  const construir = fromPromise<{ costoUsd: number }, EntradaConstruir>(async ({ input }) => {
-    appendFileSync(join(input.dir, "train.py"), "# cambio\n");
-    return { costoUsd: 0 };
-  });
-  const correrChecks = fromPromise<ResultadoChecks, { dir: string }>(async () => ({ ok: true, salida: "" }));
   const cambiosMeta = [
     (p: string) => p.replace("GANANCIA=0.1", "GANANCIA=0.3"), // mejor: se conserva
     (p: string) => p.replace("GANANCIA=0.3", "GANANCIA=0.05"), // peor: se descarta
     (p: string) => p.replace("reglas", "sin reglas"), // toca lo protegido: se revierte
   ];
-  const proponerPrograma = fromPromise<{ costoUsd: number }, { raiz: string }>(async ({ input }) => {
-    const ruta = join(input.raiz, "program.md");
-    writeFileSync(ruta, cambiosMeta.shift()!(readFileSync(ruta, "utf8")));
-    return { costoUsd: 0.5 };
+  const agente = agenteFalso({
+    checks: (e) => {
+      mkdirSync(join(e.cwd, "checks"), { recursive: true });
+      writeFileSync(join(e.cwd, "checks", "c.py"), "# check\n");
+      return ["cambio", 0];
+    },
+    build: (e) => {
+      appendFileSync(join(e.cwd, "train.py"), "# cambio\n");
+      return ["listo", 0];
+    },
+    programa: (e) => {
+      const ruta = join(e.cwd, "program.md");
+      writeFileSync(ruta, cambiosMeta.shift()!(readFileSync(ruta, "utf8")));
+      return ["cambio al programa", 0.5];
+    },
   });
+  const checks: Checks = { resultado: async () => ({ ok: true, salida: "" }) };
+  // El falso entrenamiento rinde según la GANANCIA escrita en el program.md vigente.
+  const entrenador: Entrenador = {
+    async medicion(dir) {
+      const base = !readFileSync(join(dir, "train.py"), "utf8").includes("# cambio");
+      const g = Number(readFileSync(join(raiz, "program.md"), "utf8").match(/GANANCIA=(\S+)/)![1]);
+      return { valLoss: base ? 1.0 : 1.0 - g };
+    },
+  };
 
-  const maquina = maquinaExterna.provide({
-    actors: { interno: maquinaInterna.provide({ actors: { escribirChecks, construir, correrChecks, entrenar } }), proponerPrograma },
+  const meta = join(raiz, "meta");
+  const maquina = crearMaquinaExterna({
+    agente,
+    checks,
+    entrenador,
+    repositorio: new RepositorioGit(raiz),
+    historial: new BitacoraTsv(join(meta, "historial.tsv"), ENCABEZADO_HISTORIAL),
+    resultados: (v) => new BitacoraTsv(join(meta, `resultados-v${v}.tsv`), ENCABEZADO_RESULTADOS),
   });
   const actor = createActor(maquina, {
     input: {
-      raiz,
       base: git(raiz, "rev-parse", "HEAD"),
       prefijo: "t",
       versiones: 4,
@@ -141,9 +179,12 @@ test("loop externo: conserva el program.md que rinde más y bloquea el bloque pr
     ],
   );
   assert.equal(salida.costoUsd, 1.5);
+  assert.equal(filas(join(meta, "historial.tsv")).length, 4);
+  assert.deepEqual(filas(join(meta, "resultados-v1.tsv")).map((f) => f[2]), ["keep", "keep"]);
   const programa = readFileSync(join(raiz, "program.md"), "utf8");
   assert.match(programa, /GANANCIA=0\.3/);
   assert.match(programa, /\nreglas\n/);
   assert.match(git(raiz, "log", "--oneline", "--", "program.md"), /program\.md v2/);
   assert.equal(git(raiz, "status", "--porcelain"), "");
+  assert.equal(git(raiz, "worktree", "list").split("\n").length, 1); // se quitaron los worktrees
 });
