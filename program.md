@@ -56,6 +56,7 @@ No puedes entrenar, hacer commits, correr los checks ni ver `run.log`.
 - `fuera_de_alcance`: en la fase 1 tocaste algo fuera de `checks/`, o en la fase 2 algo
   además de `train.py`; se deshizo todo.
 - `checks_fallidos`: tras 3 intentos de construcción los checks no pasaron.
+- `fallo_agente`: la llamada al agente falló (error, timeout o presupuesto); se deshizo.
 
 ## Criterio de simplicidad
 

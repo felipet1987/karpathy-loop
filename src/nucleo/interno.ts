@@ -35,6 +35,7 @@ export interface EntradaInterno {
   programa: string; // program.md vigente (lo entrega el loop externo)
   maxIteraciones: number;
   minutos: number;
+  topeUsd: number; // gasto máximo de la corrida; Infinity = sin tope
 }
 
 export interface SalidaInterno {
@@ -46,7 +47,7 @@ export interface SalidaInterno {
 
 export const ENCABEZADO_RESULTADOS = ["commit", "val_loss", "status", "description"] as const;
 
-export type Estado = "keep" | "discard" | "crash" | "fuera_de_alcance" | "checks_fallidos";
+export type Estado = "keep" | "discard" | "crash" | "fuera_de_alcance" | "checks_fallidos" | "fallo_agente";
 
 /** Intentos de construcción por iteración antes de rendirse con los checks. */
 export const INTENTOS_BUILD = 3;
@@ -63,8 +64,14 @@ interface Contexto extends EntradaInterno {
   medicion: Medicion | null;
 }
 
-function registrar(c: Contexto, estado: Estado, valLoss: number, commit = c.repositorio.commitCorto()) {
-  c.bitacora.anotar([commit, valLoss.toFixed(6), estado, c.descripcion]);
+function registrar(
+  c: Contexto,
+  estado: Estado,
+  valLoss: number,
+  commit = c.repositorio.commitCorto(),
+  descripcion = c.descripcion,
+) {
+  c.bitacora.anotar([commit, valLoss.toFixed(6), estado, descripcion]);
 }
 
 export function crearMaquinaInterna(puertos: PuertosInterno) {
@@ -93,7 +100,9 @@ export function crearMaquinaInterna(puertos: PuertosInterno) {
       quedanIntentos: ({ context }) => context.intento < INTENTOS_BUILD,
       mejoro: ({ context }) => context.medicion!.valLoss < context.mejor,
       quedaPresupuesto: ({ context }) =>
-        context.iteracion < context.maxIteraciones && Date.now() < context.finEn,
+        context.iteracion < context.maxIteraciones &&
+        Date.now() < context.finEn &&
+        context.costoUsd < context.topeUsd,
     },
     actions: {
       descartar: ({ context }) => context.repositorio.descartar(),
@@ -101,6 +110,13 @@ export function crearMaquinaInterna(puertos: PuertosInterno) {
       sumarCostoDelFallo: assign(({ context, event }) => ({
         costoUsd: context.costoUsd + costoDe((event as { error?: unknown }).error),
       })),
+      // Un fallo del agente deja fila: si no, un tope agotado consumiría iteraciones en silencio.
+      falloDeAgente: ({ context, event }) => {
+        const error = (event as { error?: unknown }).error;
+        const motivo = error instanceof Error ? error.message : String(error);
+        registrar(context, "fallo_agente", Infinity, "-", context.descripcion || motivo);
+        context.repositorio.descartar();
+      },
       fueraDeAlcance: ({ context }) => {
         registrar(context, "fuera_de_alcance", Infinity, "-");
         context.repositorio.descartar();
@@ -156,8 +172,8 @@ export function crearMaquinaInterna(puertos: PuertosInterno) {
               costoUsd: context.costoUsd + event.output.costoUsd,
             })),
           },
-          // Si el agente falla, se descarta lo que haya dejado y se sigue.
-          onError: { target: "siguiente", actions: ["sumarCostoDelFallo", "descartar"] },
+          // Si el agente falla, se anota, se descarta lo que haya dejado y se sigue.
+          onError: { target: "siguiente", actions: ["sumarCostoDelFallo", "falloDeAgente"] },
         },
       },
       // Los checks pasan al index: así se detecta si la construcción los toca.
@@ -182,7 +198,7 @@ export function crearMaquinaInterna(puertos: PuertosInterno) {
             target: "verificando",
             actions: assign(({ context, event }) => ({ costoUsd: context.costoUsd + event.output.costoUsd })),
           },
-          onError: { target: "siguiente", actions: ["sumarCostoDelFallo", "descartar"] },
+          onError: { target: "siguiente", actions: ["sumarCostoDelFallo", "falloDeAgente"] },
         },
       },
       verificando: {

@@ -41,6 +41,7 @@ node src/cli.ts externo --versiones 4 --iteraciones 8
 | `--iteraciones` | 10               | 8 por tanda      | iteraciones del loop interno          |
 | `--minutos`     | 15               | 10 por tanda     | tope de reloj del loop interno        |
 | `--versiones`   | —                | 4                | versiones de `program.md` a probar    |
+| `--tope-usd`    | sin tope         | sin tope, por tanda | gasto máximo; al alcanzarlo no empieza otra iteración |
 | `--etiqueta`    | fecha `AAAAMMDDhhmm` (UTC) | ídem   | nombre del worktree y de la rama      |
 
 | Variable                    | Por defecto       | Qué controla                            |
@@ -86,6 +87,7 @@ Status que quedan en `results.tsv`:
 | `crash`            | el entrenamiento falló, pasó de 60 s o no imprimió `val_loss`      |
 | `fuera_de_alcance` | el agente tocó algo fuera de lo permitido en su fase; se deshizo   |
 | `checks_fallidos`  | tras 3 intentos de build los checks no pasaron; se deshizo         |
+| `fallo_agente`     | la llamada a `claude -p` falló; su costo igual se cuenta, se deshizo |
 
 Límites: 15 min por llamada al agente, 60 s por check, 60 s por entrenamiento, y los
 últimos 4000 caracteres de la salida de los checks vuelven al agente.

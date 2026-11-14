@@ -85,6 +85,7 @@ test("loop interno: write checks → build → pass checks; conserva, revierte, 
       programa: PROGRAMA,
       maxIteraciones: 7,
       minutos: 5,
+      topeUsd: Infinity,
     },
   });
   actor.start();
@@ -164,6 +165,7 @@ test("loop externo: conserva el program.md que rinde más y bloquea el bloque pr
       versiones: 4,
       iteracionesPorTanda: 1,
       minutosPorTanda: 5,
+      topeUsdPorTanda: Infinity,
     },
   });
   actor.start();
@@ -190,7 +192,7 @@ test("loop externo: conserva el program.md que rinde más y bloquea el bloque pr
 });
 
 /** Máquina interna con checks que pasan y entrenamiento fijo; el agente lo pone cada test. */
-function internaCon(agente: Agente, dir: string, extra: { maxIteraciones?: number } = {}) {
+function internaCon(agente: Agente, dir: string, extra: { maxIteraciones?: number; topeUsd?: number } = {}) {
   const checks: Checks = { resultado: async () => ({ ok: true, salida: "" }) };
   const entrenador: Entrenador = { medicion: async () => ({ valLoss: 1.0 }) };
   const tsv = join(dir, "results.tsv");
@@ -201,19 +203,46 @@ function internaCon(agente: Agente, dir: string, extra: { maxIteraciones?: numbe
       programa: PROGRAMA,
       maxIteraciones: extra.maxIteraciones ?? 1,
       minutos: 5,
+      topeUsd: extra.topeUsd ?? Infinity,
     },
   });
   return { actor, tsv };
 }
 
-test("loop interno: el costo de una llamada fallida se suma", async () => {
+test("loop interno: un fallo del agente suma su costo y deja fila fallo_agente", async () => {
   const dir = repoDePrueba();
   const agente: Agente = {
     async respuesta() {
       throw new FalloDeAgente("error_max_budget_usd", 2);
     },
   };
-  const { actor } = internaCon(agente, dir);
+  const { actor, tsv } = internaCon(agente, dir);
   actor.start();
   assert.equal((await toPromise(actor)).costoUsd, 2);
+  assert.deepEqual(filas(tsv).map((f) => [f[2], f[3]]), [
+    ["keep", "linea base"],
+    ["fallo_agente", "error_max_budget_usd"],
+  ]);
+  assert.equal(git(dir, "status", "--porcelain"), "");
+});
+
+test("loop interno: se detiene al alcanzar el tope de USD", async () => {
+  const dir = repoDePrueba();
+  // Cada fase cuesta 1: una iteración completa (checks + build) cuesta 2.
+  const agente = agenteFalso({
+    checks: (e) => {
+      mkdirSync(join(e.cwd, "checks"), { recursive: true });
+      writeFileSync(join(e.cwd, "checks", "c.py"), `# ${Math.random()}\n`);
+      return ["cambio", 1];
+    },
+    build: (e) => {
+      appendFileSync(join(e.cwd, "train.py"), "# cambio\n");
+      return ["listo", 1];
+    },
+  });
+  const { actor } = internaCon(agente, dir, { maxIteraciones: 10, topeUsd: 3 });
+  actor.start();
+  const salida = await toPromise(actor);
+  assert.equal(salida.iteraciones, 2); // tras la 1.ª lleva 2 < 3; tras la 2.ª lleva 4 ≥ 3
+  assert.equal(salida.costoUsd, 4);
 });

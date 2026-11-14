@@ -20,6 +20,7 @@ export interface EntradaExterno {
   versiones: number;
   iteracionesPorTanda: number;
   minutosPorTanda: number;
+  topeUsdPorTanda: number; // Infinity = sin tope
 }
 
 export interface SalidaExterno {
@@ -99,6 +100,7 @@ export function crearMaquinaExterna(puertos: PuertosExterno) {
             programa: repositorio.contenido(PROGRAMA),
             maxIteraciones: context.iteracionesPorTanda,
             minutos: context.minutosPorTanda,
+            topeUsd: context.topeUsdPorTanda,
           }),
           onDone: {
             target: "decidiendo",

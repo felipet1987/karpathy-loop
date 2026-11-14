@@ -1,6 +1,7 @@
 // Uso:
-//   node src/cli.ts interno [--iteraciones 10] [--minutos 15] [--etiqueta nov13]
-//   node src/cli.ts externo [--versiones 4] [--iteraciones 8] [--minutos 10] [--etiqueta nov13]
+//   node src/cli.ts interno [--iteraciones 10] [--minutos 15] [--tope-usd 5] [--etiqueta nov13]
+//   node src/cli.ts externo [--versiones 4] [--iteraciones 8] [--minutos 10] [--tope-usd 5] [--etiqueta nov13]
+// --tope-usd: gasto máximo por corrida interna (por tanda en externo); sin flag, sin tope.
 // Cada iteración llama a Claude Code (`claude -p`) al menos dos veces y consume cuota.
 // Composition root: único lugar donde se construyen los adaptadores y se cablean al núcleo.
 import { execFileSync } from "node:child_process";
@@ -24,6 +25,7 @@ const { positionals, values } = parseArgs({
     iteraciones: { type: "string" },
     minutos: { type: "string" },
     versiones: { type: "string" },
+    "tope-usd": { type: "string" },
     etiqueta: { type: "string", default: new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "") },
   },
 });
@@ -49,6 +51,7 @@ async function correr(logica: AnyActorLogic, input: unknown) {
 }
 
 const base = repositorio.commitCorto();
+const topeUsd = values["tope-usd"] === undefined ? Infinity : Number(values["tope-usd"]);
 const puertos = {
   agente: new ClaudeCli(
     "claude",
@@ -67,6 +70,7 @@ if (positionals[0] === "interno") {
     programa: repositorio.contenido("program.md"),
     maxIteraciones: Number(values.iteraciones ?? 10),
     minutos: Number(values.minutos ?? 15),
+    topeUsd,
   });
 } else if (positionals[0] === "externo") {
   const meta = join(raiz, "meta");
@@ -82,8 +86,9 @@ if (positionals[0] === "interno") {
     versiones: Number(values.versiones ?? 4),
     iteracionesPorTanda: Number(values.iteraciones ?? 8),
     minutosPorTanda: Number(values.minutos ?? 10),
+    topeUsdPorTanda: topeUsd,
   });
 } else {
-  console.error("Uso: node src/cli.ts interno|externo [--iteraciones N] [--minutos N] [--versiones N] [--etiqueta X]");
+  console.error("Uso: node src/cli.ts interno|externo [--iteraciones N] [--minutos N] [--versiones N] [--tope-usd X] [--etiqueta X]");
   process.exit(2);
 }
