@@ -10,3 +10,7 @@ meta/
 # graft's local graph cache — regenerable, not committed (run `graft build`).
 /graft/
 .ignore
+
+# Local del editor y planes de trabajo
+.idea/
+plan-*.md
