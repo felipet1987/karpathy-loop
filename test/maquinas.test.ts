@@ -246,3 +246,35 @@ test("loop interno: se detiene al alcanzar el tope de USD", async () => {
   assert.equal(salida.iteraciones, 2); // tras la 1.ª lleva 2 < 3; tras la 2.ª lleva 4 ≥ 3
   assert.equal(salida.costoUsd, 4);
 });
+
+test("loop externo: si el interno falla, quita el worktree y descarta la tanda", async () => {
+  const raiz = repoDePrueba();
+  const rota = {
+    anotar() {
+      throw new Error("disco lleno");
+    },
+    texto: () => "",
+  };
+  const maquina = crearMaquinaExterna({
+    agente: agenteFalso({}),
+    checks: { resultado: async () => ({ ok: true, salida: "" }) },
+    entrenador: { medicion: async () => ({ valLoss: 1.0 }) },
+    repositorio: new RepositorioGit(raiz),
+    historial: new BitacoraTsv(join(raiz, "meta", "historial.tsv"), ENCABEZADO_HISTORIAL),
+    resultados: () => rota,
+  });
+  const actor = createActor(maquina, {
+    input: {
+      base: git(raiz, "rev-parse", "HEAD"),
+      prefijo: "t",
+      versiones: 1,
+      iteracionesPorTanda: 1,
+      minutosPorTanda: 5,
+      topeUsdPorTanda: Infinity,
+    },
+  });
+  actor.start();
+  const salida = await toPromise(actor);
+  assert.deepEqual(salida.historial, [{ version: 1, ganancia: 0, estado: "descartar" }]);
+  assert.equal(git(raiz, "worktree", "list").split("\n").length, 1);
+});

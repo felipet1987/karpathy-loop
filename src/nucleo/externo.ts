@@ -112,6 +112,14 @@ export function crearMaquinaExterna(puertos: PuertosExterno) {
               ({ context }) => repositorio.quitar(context.worktree!),
             ],
           },
+          // Si el interno falla (git, disco), la tanda cuenta como ganancia 0 y se descarta.
+          onError: {
+            target: "descartando",
+            actions: [
+              assign({ resultado: { lineaBase: Infinity, mejor: Infinity, iteraciones: 0, costoUsd: 0 } }),
+              ({ context }) => repositorio.quitar(context.worktree!),
+            ],
+          },
         },
       },
       decidiendo: {
