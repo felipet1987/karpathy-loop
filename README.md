@@ -104,6 +104,9 @@ Límites: 15 min por llamada al agente, 60 s por check, 60 s por entrenamiento, 
   se revierte su cambio.
 - Todas las tandas del loop externo parten del mismo commit, para comparar versiones
   de `program.md` en igualdad.
+- `claude -p` y `uv run train.py` corren cada uno en su propio grupo de procesos. Un
+  plazo vencido, un abort o Ctrl-C (que detiene el actor y aborta los `AbortSignal` de
+  `Agente` y `Entrenador`) matan el grupo entero, con hijos y nietos.
 - `claude -p` corre con `--setting-sources ""` y `--permission-mode dontAsk`: sin hooks
   ni `CLAUDE.md` del usuario, y solo con las herramientas de su fase.
 

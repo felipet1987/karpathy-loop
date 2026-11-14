@@ -82,9 +82,9 @@ export function crearMaquinaInterna(puertos: PuertosInterno) {
       output: {} as SalidaInterno,
     },
     actors: {
-      agente: fromPromise<Respuesta, Encargo>(({ input }) => puertos.agente.respuesta(input)),
+      agente: fromPromise<Respuesta, Encargo>(({ input, signal }) => puertos.agente.respuesta(input, signal)),
       checks: fromPromise<ResultadoChecks, string>(({ input }) => puertos.checks.resultado(input)),
-      entrenar: fromPromise<Medicion, string>(({ input }) => puertos.entrenador.medicion(input)),
+      entrenar: fromPromise<Medicion, string>(({ input, signal }) => puertos.entrenador.medicion(input, signal)),
     },
     guards: {
       // La fase de checks solo tocó checks/, y algo tocó.

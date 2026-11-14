@@ -278,3 +278,20 @@ test("loop externo: si el interno falla, quita el worktree y descarta la tanda",
   assert.deepEqual(salida.historial, [{ version: 1, ganancia: 0, estado: "descartar" }]);
   assert.equal(git(raiz, "worktree", "list").split("\n").length, 1);
 });
+
+test("loop interno: detener la máquina aborta el signal del agente en curso", async () => {
+  const dir = repoDePrueba();
+  let recibido: AbortSignal | undefined;
+  const agente: Agente = {
+    respuesta: (_encargo, signal) => {
+      recibido = signal;
+      return new Promise(() => {}); // nunca responde
+    },
+  };
+  const { actor } = internaCon(agente, dir);
+  actor.start();
+  for (let i = 0; i < 100 && !recibido; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.equal(recibido?.aborted, false);
+  actor.stop();
+  assert.equal(recibido?.aborted, true);
+});

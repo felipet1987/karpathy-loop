@@ -40,8 +40,9 @@ export class FalloDeAgente extends Error {
 /** Lo gastado por una llamada que terminó en error; 0 si el error no lo informa. */
 export const costoDe = (error: unknown) => (error instanceof FalloDeAgente ? error.costoUsd : 0);
 
+/** `signal` se aborta cuando la máquina abandona el estado: el adaptador debe cortar el proceso. */
 export interface Agente {
-  respuesta(encargo: Encargo): Promise<Respuesta>;
+  respuesta(encargo: Encargo, signal: AbortSignal): Promise<Respuesta>;
 }
 
 export interface Checks {
@@ -49,7 +50,7 @@ export interface Checks {
 }
 
 export interface Entrenador {
-  medicion(dir: string): Promise<Medicion>;
+  medicion(dir: string, signal: AbortSignal): Promise<Medicion>;
 }
 
 /** Registro de filas TSV con encabezado. */

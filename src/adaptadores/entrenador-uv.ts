@@ -1,9 +1,9 @@
-import { spawn } from "node:child_process";
-import { createWriteStream, readFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Entrenador, Medicion } from "../nucleo/puertos.ts";
+import { ProcesoEnGrupo } from "./proceso-en-grupo.ts";
 
-/** Corre `uv run train.py > run.log 2>&1` y lee val_loss del log. */
+/** Corre `uv run train.py`, deja stdout y stderr en run.log y lee val_loss. */
 export class EntrenadorUv implements Entrenador {
   readonly #limiteMs: number;
 
@@ -11,23 +11,12 @@ export class EntrenadorUv implements Entrenador {
     this.#limiteMs = limiteMs;
   }
 
-  medicion(dir: string): Promise<Medicion> {
-    return new Promise((resolve, reject) => {
-      const ruta = join(dir, "run.log");
-      const log = createWriteStream(ruta);
-      const proc = spawn("uv", ["run", "train.py"], { cwd: dir });
-      proc.stdout.pipe(log);
-      proc.stderr.pipe(log);
-      const reloj = setTimeout(() => proc.kill("SIGKILL"), this.#limiteMs);
-      proc.on("close", (codigo) => {
-        clearTimeout(reloj);
-        log.end(() => {
-          const m = readFileSync(ruta, "utf8").match(/^val_loss:\s+(\S+)/m);
-          const valLoss = m ? Number(m[1]) : NaN;
-          if (codigo === 0 && Number.isFinite(valLoss)) resolve({ valLoss });
-          else reject(new Error(`entrenamiento fallido (código ${codigo})`));
-        });
-      });
-    });
+  async medicion(dir: string, signal: AbortSignal): Promise<Medicion> {
+    const s = await new ProcesoEnGrupo("uv", ["run", "train.py"], dir, this.#limiteMs).salida("", signal);
+    writeFileSync(join(dir, "run.log"), s.combinada);
+    const m = s.combinada.match(/^val_loss:\s+(\S+)/m);
+    const valLoss = m ? Number(m[1]) : NaN;
+    if (s.motivo === "fin" && s.codigo === 0 && Number.isFinite(valLoss)) return { valLoss };
+    throw new Error(`entrenamiento fallido (${s.motivo}, código ${s.codigo})`);
   }
 }

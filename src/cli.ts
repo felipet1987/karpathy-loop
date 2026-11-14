@@ -43,11 +43,20 @@ async function correr(logica: AnyActorLogic, input: unknown) {
     if (estado !== anterior) console.log(`[${new Date().toLocaleTimeString()}] ${estado}`);
     anterior = estado;
   });
+  // Los agentes y el entrenamiento corren en su propio grupo de procesos, así que Ctrl-C no
+  // les llega: detener el actor aborta sus signals y cada adaptador mata su grupo.
+  const detener = () => {
+    console.error("Deteniendo: se cancelan los procesos en curso.");
+    actor.stop();
+    process.exitCode = 130;
+  };
+  process.once("SIGINT", detener);
+  process.once("SIGTERM", detener);
   actor.start();
   const fin = await new Promise((resolve, reject) => {
     actor.subscribe({ complete: () => resolve(actor.getSnapshot().output), error: reject });
   });
-  console.log(JSON.stringify(fin, null, 2));
+  if (fin !== undefined) console.log(JSON.stringify(fin, null, 2)); // undefined: se detuvo
 }
 
 const base = repositorio.commitCorto();

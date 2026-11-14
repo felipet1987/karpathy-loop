@@ -64,8 +64,11 @@ export function crearMaquinaExterna(puertos: PuertosExterno) {
     actors: {
       interno: crearMaquinaInterna(puertos),
       // El meta-prompt se lee dentro del actor: si falta, cae en onError como un fallo del agente.
-      reescribirPrograma: fromPromise<Respuesta>(async () =>
-        puertos.agente.respuesta(encargoPrograma(repositorio.directorio(), repositorio.contenido("meta-prompt.md"))),
+      reescribirPrograma: fromPromise<Respuesta>(async ({ signal }) =>
+        puertos.agente.respuesta(
+          encargoPrograma(repositorio.directorio(), repositorio.contenido("meta-prompt.md")),
+          signal,
+        ),
       ),
     },
     guards: {
