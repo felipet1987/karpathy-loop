@@ -1,4 +1,4 @@
-// Adaptadores locales, sin cuota: ChecksUv necesita uv; el resto es solo disco.
+// Adaptadores locales, sin cuota: ChecksUv necesita uv; ClaudeCli usa un binario falso.
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -6,7 +6,9 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { BitacoraTsv } from "../src/adaptadores/bitacora-tsv.ts";
 import { ChecksUv } from "../src/adaptadores/checks-uv.ts";
+import { ClaudeCli } from "../src/adaptadores/claude-cli.ts";
 import { SalidaRecortada } from "../src/adaptadores/salida-recortada.ts";
+import { FalloDeAgente } from "../src/nucleo/puertos.ts";
 
 const temporal = () => mkdtempSync(join(tmpdir(), "karpathy-adaptadores-"));
 
@@ -40,4 +42,17 @@ test("BitacoraTsv: crea carpeta y encabezado con la primera fila y limpia tabs",
   assert.equal(bitacora.texto(), "");
   bitacora.anotar(["1", "x\ty\nz"]);
   assert.equal(bitacora.texto(), "a\tb\n1\tx y z\n");
+});
+
+test("ClaudeCli: con código ≠ 0 conserva el costo informado en el JSON", async () => {
+  const dir = temporal();
+  const binario = join(dir, "claude-falso");
+  writeFileSync(
+    binario,
+    '#!/bin/sh\ncat > /dev/null\necho \'{"subtype":"error_max_budget_usd","is_error":true,"total_cost_usd":1.5}\'\nexit 1\n',
+    { mode: 0o755 },
+  );
+  const agente = new ClaudeCli(binario, "modelo", 1, 10_000);
+  const encargo = { fase: "build" as const, systemPrompt: "s", prompt: "p", cwd: dir, herramientas: ["Read"] };
+  await assert.rejects(agente.respuesta(encargo), (e) => e instanceof FalloDeAgente && e.costoUsd === 1.5);
 });

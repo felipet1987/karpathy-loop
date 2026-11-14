@@ -6,7 +6,7 @@
 import { assign, fromPromise, setup } from "xstate";
 import { encargoPrograma } from "./encargos.ts";
 import { crearMaquinaInterna, type PuertosInterno, type SalidaInterno } from "./interno.ts";
-import type { Bitacora, Repositorio, Respuesta } from "./puertos.ts";
+import { costoDe, type Bitacora, type Repositorio, type Respuesta } from "./puertos.ts";
 
 export interface PuertosExterno extends PuertosInterno {
   repositorio: Repositorio; // raíz: program.md, meta-prompt.md, prepare.py y train.py
@@ -144,7 +144,10 @@ export function crearMaquinaExterna(puertos: PuertosExterno) {
             target: "custodiando",
             actions: assign(({ context, event }) => ({ costoUsd: context.costoUsd + event.output.costoUsd })),
           },
-          onError: { target: "custodiando" },
+          onError: {
+            target: "custodiando",
+            actions: assign(({ context, event }) => ({ costoUsd: context.costoUsd + costoDe(event.error) })),
+          },
         },
       },
       // Guardia: el meta-agente solo puede tocar program.md, y fuera del bloque protegido.

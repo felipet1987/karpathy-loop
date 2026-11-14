@@ -26,6 +26,20 @@ export interface Medicion {
   valLoss: number;
 }
 
+/** Un agente que falló después de gastar: el costo viaja con el error para que no se pierda. */
+export class FalloDeAgente extends Error {
+  readonly costoUsd: number;
+
+  constructor(mensaje: string, costoUsd: number) {
+    super(mensaje);
+    this.name = "FalloDeAgente";
+    this.costoUsd = costoUsd;
+  }
+}
+
+/** Lo gastado por una llamada que terminó en error; 0 si el error no lo informa. */
+export const costoDe = (error: unknown) => (error instanceof FalloDeAgente ? error.costoUsd : 0);
+
 export interface Agente {
   respuesta(encargo: Encargo): Promise<Respuesta>;
 }

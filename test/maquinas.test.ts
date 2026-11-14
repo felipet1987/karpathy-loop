@@ -10,7 +10,7 @@ import { BitacoraTsv } from "../src/adaptadores/bitacora-tsv.ts";
 import { RepositorioGit } from "../src/adaptadores/repositorio-git.ts";
 import { crearMaquinaExterna, ENCABEZADO_HISTORIAL } from "../src/nucleo/externo.ts";
 import { crearMaquinaInterna, ENCABEZADO_RESULTADOS } from "../src/nucleo/interno.ts";
-import type { Agente, Checks, Encargo, Entrenador } from "../src/nucleo/puertos.ts";
+import { FalloDeAgente, type Agente, type Checks, type Encargo, type Entrenador } from "../src/nucleo/puertos.ts";
 
 const PROGRAMA = "# programa\nGANANCIA=0.1\n<!-- protegido -->\nreglas\n<!-- fin protegido -->\n";
 
@@ -187,4 +187,33 @@ test("loop externo: conserva el program.md que rinde más y bloquea el bloque pr
   assert.match(git(raiz, "log", "--oneline", "--", "program.md"), /program\.md v2/);
   assert.equal(git(raiz, "status", "--porcelain"), "");
   assert.equal(git(raiz, "worktree", "list").split("\n").length, 1); // se quitaron los worktrees
+});
+
+/** Máquina interna con checks que pasan y entrenamiento fijo; el agente lo pone cada test. */
+function internaCon(agente: Agente, dir: string, extra: { maxIteraciones?: number } = {}) {
+  const checks: Checks = { resultado: async () => ({ ok: true, salida: "" }) };
+  const entrenador: Entrenador = { medicion: async () => ({ valLoss: 1.0 }) };
+  const tsv = join(dir, "results.tsv");
+  const actor = createActor(crearMaquinaInterna({ agente, checks, entrenador }), {
+    input: {
+      repositorio: new RepositorioGit(dir),
+      bitacora: new BitacoraTsv(tsv, ENCABEZADO_RESULTADOS),
+      programa: PROGRAMA,
+      maxIteraciones: extra.maxIteraciones ?? 1,
+      minutos: 5,
+    },
+  });
+  return { actor, tsv };
+}
+
+test("loop interno: el costo de una llamada fallida se suma", async () => {
+  const dir = repoDePrueba();
+  const agente: Agente = {
+    async respuesta() {
+      throw new FalloDeAgente("error_max_budget_usd", 2);
+    },
+  };
+  const { actor } = internaCon(agente, dir);
+  actor.start();
+  assert.equal((await toPromise(actor)).costoUsd, 2);
 });

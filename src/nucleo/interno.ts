@@ -10,16 +10,17 @@
 // Repositorio y Bitacora llegan en el input, porque cambian con cada worktree.
 import { assign, fromPromise, setup } from "xstate";
 import { CHECKS, EDITABLE, descripcionDe, encargoBuild, encargoChecks } from "./encargos.ts";
-import type {
-  Agente,
-  Bitacora,
-  Checks,
-  Encargo,
-  Entrenador,
-  Medicion,
-  Repositorio,
-  Respuesta,
-  ResultadoChecks,
+import {
+  costoDe,
+  type Agente,
+  type Bitacora,
+  type Checks,
+  type Encargo,
+  type Entrenador,
+  type Medicion,
+  type Repositorio,
+  type Respuesta,
+  type ResultadoChecks,
 } from "./puertos.ts";
 
 export interface PuertosInterno {
@@ -96,6 +97,10 @@ export function crearMaquinaInterna(puertos: PuertosInterno) {
     },
     actions: {
       descartar: ({ context }) => context.repositorio.descartar(),
+      // Lo gastado por una llamada fallida también cuenta.
+      sumarCostoDelFallo: assign(({ context, event }) => ({
+        costoUsd: context.costoUsd + costoDe((event as { error?: unknown }).error),
+      })),
       fueraDeAlcance: ({ context }) => {
         registrar(context, "fuera_de_alcance", Infinity, "-");
         context.repositorio.descartar();
@@ -152,7 +157,7 @@ export function crearMaquinaInterna(puertos: PuertosInterno) {
             })),
           },
           // Si el agente falla, se descarta lo que haya dejado y se sigue.
-          onError: { target: "siguiente", actions: "descartar" },
+          onError: { target: "siguiente", actions: ["sumarCostoDelFallo", "descartar"] },
         },
       },
       // Los checks pasan al index: así se detecta si la construcción los toca.
@@ -177,7 +182,7 @@ export function crearMaquinaInterna(puertos: PuertosInterno) {
             target: "verificando",
             actions: assign(({ context, event }) => ({ costoUsd: context.costoUsd + event.output.costoUsd })),
           },
-          onError: { target: "siguiente", actions: "descartar" },
+          onError: { target: "siguiente", actions: ["sumarCostoDelFallo", "descartar"] },
         },
       },
       verificando: {

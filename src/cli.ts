@@ -51,6 +51,7 @@ async function correr(logica: AnyActorLogic, input: unknown) {
 const base = repositorio.commitCorto();
 const puertos = {
   agente: new ClaudeCli(
+    "claude",
     process.env.KL_MODELO ?? "claude-opus-5-5",
     Number(process.env.KL_PRESUPUESTO_AGENTE_USD ?? 2), // por invocación
     15 * 60_000,
