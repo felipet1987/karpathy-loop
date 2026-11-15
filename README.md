@@ -18,7 +18,7 @@ solo escribe checks y cambios.
 | `meta-prompt.md`   | system prompt del meta-agente del loop externo                 |
 | `src/nucleo/`      | máquinas XState, puertos y encargos; sin infraestructura       |
 | `src/adaptadores/` | implementaciones de los puertos (git, TSV, uv, `claude -p`)    |
-| `src/cli.ts`       | composition root: construye los adaptadores y los cablea       |
+| `src/cli.ts`       | punto de entrada y composition root: cablea los adaptadores     |
 
 ## Requisitos
 
@@ -115,6 +115,16 @@ Límites: 15 min por llamada al agente, 60 s por check, 60 s por entrenamiento, 
 Hexagonal: el núcleo (`src/nucleo/`) solo conoce cinco puertos, definidos en
 `src/nucleo/puertos.ts`. No importa `fs`, `child_process` ni ningún adaptador.
 
+**Entrada.** El núcleo expone un puerto de entrada, `Corridas` (`src/nucleo/corridas.ts`),
+con dos casos de uso: `interna` y `externa`. Ahí viven las reglas que no dependen de
+quién llama: repo limpio (`RepoConCambios`), un worktree por corrida, avisos de progreso
+y cancelación con `AbortSignal` (`CorridaCancelada`). El adaptador de entrada `Consola`
+(`src/adaptadores/entrada/consola.ts`) traduce argumentos a esos casos de uso y su
+resultado a texto y código de salida (0, 1 repo sucio, 2 uso inválido, 130 cancelada).
+Otro adaptador de entrada (HTTP, un scheduler) usaría el mismo puerto.
+
+**Salida.** Los cinco puertos de abajo los implementan los adaptadores de salida:
+
 | Puerto        | Adaptador                   | Llega al núcleo por                        |
 |---------------|-----------------------------|--------------------------------------------|
 | `Agente`      | `ClaudeCli`                 | fábrica                                    |
@@ -148,6 +158,7 @@ Para comprobar que el núcleo sigue limpio:
 | Archivo                     | Qué cubre                                                    |
 |-----------------------------|--------------------------------------------------------------|
 | `test/maquinas.test.ts`     | las dos máquinas con `Agente`, `Checks` y `Entrenador` falsos, sobre git real en un repo temporal: los cinco status, reintentos de build, bloque protegido y worktrees |
+| `test/consola.test.ts`      | adaptador de entrada con `Corridas` falsas: flags, defaults, validación y códigos de salida |
 | `test/adaptadores.test.ts`  | `ChecksUv` (necesita `uv`), `SalidaRecortada` y `BitacoraTsv` |
 
 Ninguno llama a `claude` ni consume cuota.

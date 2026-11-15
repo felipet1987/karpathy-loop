@@ -8,6 +8,7 @@ import { test } from "node:test";
 import { createActor, toPromise } from "xstate";
 import { BitacoraTsv } from "../src/adaptadores/bitacora-tsv.ts";
 import { RepositorioGit } from "../src/adaptadores/repositorio-git.ts";
+import { CorridaCancelada, crearCorridas, RepoConCambios } from "../src/nucleo/corridas.ts";
 import { crearMaquinaExterna, ENCABEZADO_HISTORIAL } from "../src/nucleo/externo.ts";
 import { crearMaquinaInterna, ENCABEZADO_RESULTADOS } from "../src/nucleo/interno.ts";
 import { FalloDeAgente, type Agente, type Checks, type Encargo, type Entrenador } from "../src/nucleo/puertos.ts";
@@ -293,5 +294,59 @@ test("loop interno: detener la máquina aborta el signal del agente en curso", a
   for (let i = 0; i < 100 && !recibido; i++) await new Promise((r) => setTimeout(r, 10));
   assert.equal(recibido?.aborted, false);
   actor.stop();
+  assert.equal(recibido?.aborted, true);
+});
+
+/** Corridas sobre un repo temporal, con el agente que ponga cada test. */
+function corridasDe(raiz: string, agente: Agente) {
+  return crearCorridas({
+    agente,
+    checks: { resultado: async () => ({ ok: true, salida: "" }) },
+    entrenador: { medicion: async () => ({ valLoss: 1.0 }) },
+    repositorio: new RepositorioGit(raiz),
+    bitacoraDeCorrida: (w) => new BitacoraTsv(join(w.directorio(), "results.tsv"), ENCABEZADO_RESULTADOS),
+    historial: new BitacoraTsv(join(raiz, "meta", "historial.tsv"), ENCABEZADO_HISTORIAL),
+    resultados: (v) => new BitacoraTsv(join(raiz, "meta", `resultados-v${v}.tsv`), ENCABEZADO_RESULTADOS),
+  });
+}
+
+const opcionesInterna = { etiqueta: "c", iteraciones: 1, minutos: 5, topeUsd: Infinity };
+
+test("corridas: con el repo sucio no crea worktree y rechaza con RepoConCambios", async () => {
+  const raiz = repoDePrueba();
+  writeFileSync(join(raiz, "suelto.txt"), "x");
+  const corridas = corridasDe(raiz, agenteFalso({}));
+  await assert.rejects(corridas.interna(opcionesInterna, () => {}, new AbortController().signal), RepoConCambios);
+  assert.equal(git(raiz, "worktree", "list").split("\n").length, 1);
+});
+
+test("corridas: interna crea el worktree, avisa estados y devuelve la salida", async () => {
+  const raiz = repoDePrueba();
+  const estados: string[] = [];
+  const agente: Agente = {
+    async respuesta() {
+      throw new FalloDeAgente("sin cuota en el test", 0);
+    },
+  };
+  const salida = await corridasDe(raiz, agente).interna(opcionesInterna, (e) => estados.push(e), new AbortController().signal);
+  assert.equal(salida.iteraciones, 1);
+  assert.deepEqual(estados.slice(0, 2), ['"lineaBase"', '"escribiendoChecks"']);
+  assert.match(git(raiz, "worktree", "list"), /\.trabajo\/c /);
+});
+
+test("corridas: abortar detiene la máquina, aborta el agente y rechaza con CorridaCancelada", async () => {
+  const raiz = repoDePrueba();
+  let recibido: AbortSignal | undefined;
+  const agente: Agente = {
+    respuesta: (_e, signal) => {
+      recibido = signal;
+      return new Promise(() => {});
+    },
+  };
+  const corte = new AbortController();
+  const corrida = corridasDe(raiz, agente).interna(opcionesInterna, () => {}, corte.signal);
+  for (let i = 0; i < 100 && !recibido; i++) await new Promise((r) => setTimeout(r, 10));
+  corte.abort();
+  await assert.rejects(corrida, CorridaCancelada);
   assert.equal(recibido?.aborted, true);
 });
