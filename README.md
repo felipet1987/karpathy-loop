@@ -8,6 +8,9 @@ solo escribe checks y cambios.
   → build → pass checks → entrenar → conservar o revertir.
 - **Loop externo:** mejora `program.md`, el system prompt del investigador. Corre tandas
   del loop interno y conserva la versión que más baja `val_loss`.
+- **Flujo por feature:** construye features pedidas en `features.md` de cualquier repo:
+  write-checks → revisión humana → approve-checks → rondas → reporte, y un auto-loop que
+  mejora `program.md` con el registro de rondas. Ver «Flujo por feature».
 
 | Archivo            | Rol                                                            |
 |--------------------|----------------------------------------------------------------|
@@ -18,6 +21,7 @@ solo escribe checks y cambios.
 | `meta-prompt.md`   | system prompt del meta-agente del loop externo                 |
 | `src/nucleo/`      | máquinas XState, puertos y encargos; sin infraestructura       |
 | `src/adaptadores/` | implementaciones de los puertos (git, TSV, uv, `claude -p`)    |
+| `plugin/skills/`   | skills `kl:write-checks`, `kl:feature-builder`, `kl:auto-loop` |
 | `src/cli.ts`       | punto de entrada y composition root: cablea los adaptadores     |
 
 ## Requisitos
@@ -110,25 +114,66 @@ Límites: 15 min por llamada al agente, 60 s por check, 60 s por entrenamiento, 
 - `claude -p` corre con `--setting-sources ""` y `--permission-mode dontAsk`: sin hooks
   ni `CLAUDE.md` del usuario, y solo con las herramientas de su fase.
 
+## Flujo por feature (checks primero)
+
+Convive con el autoresearch: en vez de bajar `val_loss`, construye features pedidas por
+una persona en cualquier repo git (`--repo`, por defecto el actual).
+
+```bash
+node src/cli.ts feature checks <id> [--repo .]                       # write-checks
+node src/cli.ts feature aprobar <id> [--repo .] [--rondas 5] [--tope-usd X]
+node src/cli.ts feature mejorar [--repo .]                           # auto-loop
+```
+
+1. **Pedido.** Una sección `## <id>` en `features.md`, commiteada.
+2. **write-checks.** Crea el worktree `.trabajo/feature-<id>` (rama `feature/<id>`) y la
+   skill `kl:write-checks` escribe tests en `checks/<id>/` antes del código. Si toca algo
+   fuera de esa carpeta, se descarta todo. Los checks quedan **sin commitear**.
+3. **Revisar checks.** La persona los lee y los ajusta en el worktree. Decide ella.
+4. **approve-checks.** `feature aprobar` commitea `checks/<id>/` (rechaza cambios fuera de
+   la carpeta). Desde ese commit la carpeta queda bloqueada.
+5. **Rondas.** La skill `kl:feature-builder` (un `claude -p` nuevo por ronda) cambia el
+   código; la máquina corre los checks y el puntaje es cuántos pasan. Si sube, se
+   conserva (commit); si no, se deshace y la salida de los checks llega a la ronda
+   siguiente. Tocar `checks/` descarta la ronda. Termina cuando todos pasan, se agotan las
+   rondas o se llega al tope de USD. Repetir `aprobar` sigue con más rondas.
+6. **Registro de rondas y reporte.** `<repo>/.kl/rondas/<id>.tsv` (ronda, commit, puntaje,
+   estado, checks que fallan, cambio) y `<repo>/.kl/reportes/<id>.md` con errores y
+   arreglos por ronda.
+7. **auto-loop.** `feature mejorar` corre la skill `kl:auto-loop`: lee el registro, busca
+   hábitos repetidos y hace un cambio a `program.md`, que guía al builder. Si toca otro
+   archivo, se revierte; si no, se commitea solo `program.md`.
+
+Estados de ronda: `base`, `conservado`, `deshecho`, `completa`, `fuera_de_alcance`,
+`sin_cambios`, `fallo_agente`.
+
+Cada archivo de `checks/<id>/` con extensión `.py`, `.sh`, `.js`, `.mjs` o `.ts` es un check
+y pasa si sale con 0 (`.py` usa `uv run python` si el repo tiene `pyproject.toml`). Las
+skills están en `plugin/skills/` y se cargan con `--plugin-dir` solo en cada `claude -p`.
+Conviene agregar `.trabajo/` y `.kl/` al `.gitignore` del repo destino.
+
 ## Arquitectura
 
-Hexagonal: el núcleo (`src/nucleo/`) solo conoce cinco puertos, definidos en
+Hexagonal: el núcleo (`src/nucleo/`) solo conoce seis puertos de salida, definidos en
 `src/nucleo/puertos.ts`. No importa `fs`, `child_process` ni ningún adaptador.
 
-**Entrada.** El núcleo expone un puerto de entrada, `Corridas` (`src/nucleo/corridas.ts`),
-con dos casos de uso: `interna` y `externa`. Ahí viven las reglas que no dependen de
+**Entrada.** El núcleo expone dos puertos de entrada: `Corridas` (`src/nucleo/corridas.ts`),
+con los casos de uso `interna` y `externa`, y `Features` (`src/nucleo/features.ts`), con
+`checks`, `aprobar` y `mejorar`. Ahí viven las reglas que no dependen de
 quién llama: repo limpio (`RepoConCambios`), un worktree por corrida, avisos de progreso
 y cancelación con `AbortSignal` (`CorridaCancelada`). El adaptador de entrada `Consola`
 (`src/adaptadores/entrada/consola.ts`) traduce argumentos a esos casos de uso y su
-resultado a texto y código de salida (0, 1 repo sucio, 2 uso inválido, 130 cancelada).
+resultado a texto y código de salida (0, 1 rechazo como repo sucio o feature inexistente,
+2 uso inválido, 130 cancelada).
 Otro adaptador de entrada (HTTP, un scheduler) usaría el mismo puerto.
 
-**Salida.** Los cinco puertos de abajo los implementan los adaptadores de salida:
+**Salida.** Los seis puertos de abajo los implementan los adaptadores de salida:
 
 | Puerto        | Adaptador                   | Llega al núcleo por                        |
 |---------------|-----------------------------|--------------------------------------------|
 | `Agente`      | `ClaudeCli`                 | fábrica                                    |
 | `Checks`      | `SalidaRecortada(ChecksUv)` | fábrica                                    |
+| `Evaluador`   | `ChecksPorArchivo`          | fábrica (flujo por feature)                |
 | `Entrenador`  | `EntrenadorUv`              | fábrica                                    |
 | `Repositorio` | `RepositorioGit`            | input (un worktree por corrida)            |
 | `Bitacora`    | `BitacoraTsv`               | input (interno) y fábrica (historial externo) |

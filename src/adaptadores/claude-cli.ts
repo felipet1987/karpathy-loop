@@ -7,12 +7,15 @@ export class ClaudeCli implements Agente {
   readonly #modelo: string;
   readonly #presupuestoUsd: number;
   readonly #limiteMs: number;
+  readonly #plugins: readonly string[];
 
-  constructor(binario: string, modelo: string, presupuestoUsd: number, limiteMs: number) {
+  /** `plugins`: carpetas de plugins de Claude Code (p. ej. las skills `kl:*`), solo para esta sesión. */
+  constructor(binario: string, modelo: string, presupuestoUsd: number, limiteMs: number, plugins: readonly string[] = []) {
     this.#binario = binario;
     this.#modelo = modelo;
     this.#presupuestoUsd = presupuestoUsd;
     this.#limiteMs = limiteMs;
+    this.#plugins = plugins;
   }
 
   async respuesta(encargo: Encargo, signal: AbortSignal): Promise<Respuesta> {
@@ -28,6 +31,7 @@ export class ClaudeCli implements Agente {
       "--no-session-persistence",
       "--model", this.#modelo,
       "--max-budget-usd", String(this.#presupuestoUsd),
+      ...this.#plugins.flatMap((p) => ["--plugin-dir", p]),
     ];
     const s = await new ProcesoEnGrupo(this.#binario, args, encargo.cwd, this.#limiteMs).salida(encargo.prompt, signal);
     if (s.motivo !== "fin") throw new FalloDeAgente(`claude -p ${s.motivo}`, 0);

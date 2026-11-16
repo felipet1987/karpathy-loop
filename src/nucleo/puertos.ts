@@ -1,7 +1,7 @@
 // Puertos: lo único que el núcleo sabe del mundo exterior. Los adaptadores viven en
 // src/adaptadores/ y se cablean en src/cli.ts.
 
-export type Fase = "checks" | "build" | "programa";
+export type Fase = "checks" | "build" | "programa" | "write-checks" | "feature-builder" | "auto-loop";
 
 /** Lo que se le pide a un agente. Es un valor: no tiene comportamiento. */
 export interface Encargo {
@@ -49,6 +49,20 @@ export interface Checks {
   resultado(dir: string): Promise<ResultadoChecks>;
 }
 
+/** Puntaje de una ronda: cuántos checks de la carpeta pasan. */
+export interface Puntaje {
+  pasados: number;
+  total: number;
+  /** Nombres de los checks que fallaron. */
+  fallidos: string[];
+  salida: string;
+}
+
+export interface Evaluador {
+  /** Corre cada check de `carpeta` (relativa a `dir`); `signal` corta el check en curso. */
+  puntaje(dir: string, carpeta: string, signal: AbortSignal): Promise<Puntaje>;
+}
+
 export interface Entrenador {
   medicion(dir: string, signal: AbortSignal): Promise<Medicion>;
 }
@@ -80,7 +94,11 @@ export interface Repositorio {
   contenido(ruta: string): string;
   /** Contenido en HEAD. */
   vigente(ruta: string): string;
-  /** Crea un worktree en una rama nueva y devuelve su repositorio. */
-  worktree(etiqueta: string, base: string): Repositorio;
+  /** La ruta (archivo o carpeta) está versionada en HEAD. */
+  existe(ruta: string): boolean;
+  /** Crea un worktree en una rama nueva (por defecto `autoresearch/<etiqueta>`) y devuelve su repositorio. */
+  worktree(etiqueta: string, base: string, rama?: string): Repositorio;
+  /** Un worktree creado antes con esa etiqueta; falla si no existe. */
+  abierto(etiqueta: string): Repositorio;
   quitar(worktree: Repositorio): void;
 }

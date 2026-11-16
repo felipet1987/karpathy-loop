@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Repositorio } from "../nucleo/puertos.ts";
 
@@ -17,7 +17,8 @@ export class RepositorioGit implements Repositorio {
 
   tocados(): string[] {
     // Sin trim: la primera línea empieza con espacio (" M train.py") y la columna importa.
-    return this.#crudo("status", "--porcelain")
+    // -uall: archivo por archivo, no la carpeta nueva entera.
+    return this.#crudo("status", "--porcelain", "-uall")
       .split("\n")
       .filter(Boolean)
       .map((linea) => linea.slice(3));
@@ -63,9 +64,19 @@ export class RepositorioGit implements Repositorio {
     return this.#crudo("show", `HEAD:${ruta}`);
   }
 
-  worktree(etiqueta: string, base: string): Repositorio {
+  existe(ruta: string): boolean {
+    return this.#git("ls-tree", "--name-only", "HEAD", "--", ruta.replace(/\/$/, "")) !== "";
+  }
+
+  worktree(etiqueta: string, base: string, rama = `autoresearch/${etiqueta}`): Repositorio {
     const dir = join(this.#dir, ".trabajo", etiqueta);
-    this.#git("worktree", "add", "-q", dir, "-b", `autoresearch/${etiqueta}`, base);
+    this.#git("worktree", "add", "-q", dir, "-b", rama, base);
+    return new RepositorioGit(dir);
+  }
+
+  abierto(etiqueta: string): Repositorio {
+    const dir = join(this.#dir, ".trabajo", etiqueta);
+    if (!existsSync(dir)) throw new Error(`no existe el worktree ${dir}`);
     return new RepositorioGit(dir);
   }
 

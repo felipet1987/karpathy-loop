@@ -29,7 +29,15 @@ export interface Corridas {
   externa(opciones: OpcionesExterna, aviso: Aviso, signal: AbortSignal): Promise<SalidaExterno>;
 }
 
-export class RepoConCambios extends Error {
+/** El caso de uso no se puede correr en el estado actual (salida 1 en la consola). */
+export class Rechazo extends Error {
+  constructor(mensaje: string) {
+    super(mensaje);
+    this.name = "Rechazo";
+  }
+}
+
+export class RepoConCambios extends Rechazo {
   constructor() {
     super("El repo tiene cambios sin commitear; las máquinas hacen checkout y los perderían.");
     this.name = "RepoConCambios";
@@ -48,41 +56,42 @@ export interface DependenciasCorridas extends PuertosExterno {
   bitacoraDeCorrida: (worktree: Repositorio) => Bitacora;
 }
 
+// Abortar detiene el actor: XState aborta los signals de los actores en curso y cada
+// adaptador mata su grupo de procesos.
+export function correr<T>(logica: AnyActorLogic, input: unknown, aviso: Aviso, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const actor = createActor(logica, { input });
+    let anterior = "";
+    actor.subscribe({
+      next: (s) => {
+        const estado = JSON.stringify(s.value);
+        if (estado !== anterior) aviso(estado);
+        anterior = estado;
+      },
+      complete: () => {
+        if (!signal.aborted) resolve(actor.getSnapshot().output as T);
+      },
+      error: reject,
+    });
+    signal.addEventListener(
+      "abort",
+      () => {
+        actor.stop();
+        reject(new CorridaCancelada());
+      },
+      { once: true },
+    );
+    if (signal.aborted) return reject(new CorridaCancelada());
+    actor.start();
+  });
+}
+
 export function crearCorridas(d: DependenciasCorridas): Corridas {
   const { repositorio } = d;
 
   const exigirLimpio = () => {
     if (repositorio.tocados().length > 0) throw new RepoConCambios();
   };
-
-  // Abortar detiene el actor: XState aborta los signals de los actores en curso y cada
-  // adaptador mata su grupo de procesos.
-  const correr = <T>(logica: AnyActorLogic, input: unknown, aviso: Aviso, signal: AbortSignal) =>
-    new Promise<T>((resolve, reject) => {
-      const actor = createActor(logica, { input });
-      let anterior = "";
-      actor.subscribe({
-        next: (s) => {
-          const estado = JSON.stringify(s.value);
-          if (estado !== anterior) aviso(estado);
-          anterior = estado;
-        },
-        complete: () => {
-          if (!signal.aborted) resolve(actor.getSnapshot().output as T);
-        },
-        error: reject,
-      });
-      signal.addEventListener(
-        "abort",
-        () => {
-          actor.stop();
-          reject(new CorridaCancelada());
-        },
-        { once: true },
-      );
-      if (signal.aborted) return reject(new CorridaCancelada());
-      actor.start();
-    });
 
   return {
     async interna(o, aviso, signal) {
