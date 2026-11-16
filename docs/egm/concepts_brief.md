@@ -2,7 +2,69 @@
 
 **Mode:** BRAINSTORM
 **FeatureConcept:** ejecución multiagente con coreografía por eventos ("checks escritos", "build listo", "checks fallidos", "experimento conservado") y un lanzador que arranca, limita (USD, tiempo, concurrencia) y detiene procesos `claude -p` y sus worktrees.
-**Repo:** `/Users/muruna/karpathy-loop` (rama `loop-interno-claude-code`)
+**Repo:** `/Users/muruna/karpathy-loop` (revisado en la rama `loop-interno-claude-code`; actualizado sobre `main` en `d378396`)
+
+## Actualización 2026-11-16: ciclo sin entrenamiento
+
+Desde `d378396` el loop interno ya no entrena: `prepare.py`, `train.py`, `Entrenador` y
+`EntrenadorUv` no existen. Cada iteración es write checks → build → pass checks, y si los
+checks pasan el cambio se **conserva** (commit). El resultado de una corrida es la cantidad
+de iteraciones conservadas. El loop externo compara versiones de `program.md` por esa
+cantidad y anota su estado de mejora (`mejora` | `sin_mejora`). Además, desde que se
+escribió el brief, se agregaron el flujo por feature (`feature checks|aprobar|mejorar`), el
+adaptador REST (`main.ts servir`) y los cuatro prerrequisitos.
+
+**Las referencias `archivo:línea` del resto del documento apuntan al código de la rama
+original** y ya no coinciden: `src/cli.ts` pasó a `src/main.ts` (punto de entrada) y
+`src/composicion.ts` (cableado), y `interno.ts`/`externo.ts` se reescribieron.
+
+### Vigencia de los hallazgos
+
+| Hallazgo | Estado | Por qué |
+| --- | --- | --- |
+| B1 entrenamientos simultáneos | **obsoleto** | no hay entrenamiento ni presupuesto de reloj que compartir |
+| B2 raíz y `program.md` compartidos | **vigente** | el externo sigue editando y commiteando `program.md` en la raíz |
+| B3 un worktree por réplica | **vigente** | `tocados`/`descartar` siguen mirando el worktree entero |
+| B4 fuga a worktrees hermanos | **vigente, más amplio** | el build ahora puede tocar todo menos `checks/` (antes solo `train.py`); el meta-agente y el auto-loop corren con cwd en la raíz y `Edit` |
+| B5 coreografía vs. contrato | **vigente** | el contrato «el ciclo lo corre la máquina» no cambió |
+| B6 giro en vacío sin presupuesto | **resuelto** | prerrequisito 2: `quedaPresupuesto` mira `costoUsd` y `fallo_agente` deja fila |
+| M1 costo subcontado / sin tope global | **parcial** | resuelto el costo en fallos y el tope por corrida (`--tope-usd`); falta el libro de gasto compartido entre réplicas |
+| M2 sin cancelación | **resuelto** | prerrequisito 4: `AbortSignal` en `Agente` y `Evaluador`, Ctrl-C y `DELETE /trabajos/{n}` |
+| M3 worktrees huérfanos | **parcial** | el externo quita el worktree también en `onError`; `interno` y `feature` lo conservan a propósito; no hay `prune` ni inventario |
+| M4 etiquetas que chocan | **vigente** | la etiqueta se valida (sin `/` ni `..`), pero sigue con resolución de minuto y `-b` falla si la rama existe |
+| M5 procesos no muertos | **resuelto** | `ProcesoEnGrupo` mata el grupo entero; `EntrenadorUv` ya no existe |
+| M6 bitácora concurrente | **vigente** | sigue el TOCTOU de `BitacoraTsv` y las filas no identifican réplica |
+| M7 `--minutos` blando | **vigente** | se evalúa solo en `siguiente` |
+| M8 observabilidad | **parcial** | hay avisos por estado y el REST guarda los avisos de cada trabajo; falta prefijo por réplica y correlación |
+| M9 ambigüedad y flags | **parcial** | existe `--tope-usd`; faltan `--replicas` y `--concurrencia` |
+| M10 `onError` en `corriendoInterno` | **resuelto** | prerrequisito 3 |
+| M11 esquema de `results.tsv` | **vigente, ya ocurrió** | `d378396` quitó la columna `val_loss` (de 4 a 3). Un `results.tsv` o `meta/*.tsv` previo queda con el encabezado viejo; hoy no hay ninguno en local |
+| M12 locks de git | **vigente** | sin cambios en `RepositorioGit` |
+| N1 «tanda» sin definir | **resuelto** | el README la define |
+| N2 «evento» vs. `event` | **vigente** | |
+| N3 convención de flags | **vigente** | `--rondas` la sigue; `--puerto` quedó en singular |
+| N4 `execFileSync` | **vigente** | |
+| N5 timeouts bajo carga | **cambia** | ya no hay `crash`; un check que vence sus 60 s por carga da `checks_fallidos` falso |
+| N6 `run.log` legible | **obsoleto** | ya no hay `run.log` |
+| N7 reloj implícito | **vigente** | |
+| N8 `Encargo` sin identidad | **vigente** | `Fase` ahora incluye las fases del flujo por feature |
+| N9 binario fijo / grep corto | **parcial** | `ClaudeCli` recibe el binario por constructor; el grep de pureza sigue igual |
+
+### Qué cambia en la recomendación
+
+- **Paso 0:** la prueba de ruido de entrenamiento ya no aplica. Queda la línea base con
+  una réplica, medida en iteraciones conservadas.
+- **Prerrequisitos:** los cuatro están hechos (`7e110c0`, `1ca5d3b`, `cc05459`, `85ae1cb`).
+- **Lanzador:** desaparece `EntrenamientoExclusivo`. Siguen `LibroDeGasto` (tope USD
+  compartido) y `Semaforo` (concurrencia de `claude -p`), y se suma un límite de checks
+  simultáneos si la carga provoca N5.
+- **Métrica:** iteraciones conservadas por USD y por minuto, en lugar de ganancia de
+  `val_loss`. Ojo: una iteración conservada no tiene un valor comparable a otra; contar
+  `keep` premia cambios chicos. Ver la decisión abierta 7.
+- **Nueva opción de corte:** el flujo por feature ya aísla cada feature en su worktree
+  (`feature/<id>`). Correr varias features en paralelo es «multiagente» sin el problema de
+  B2, porque cada una tiene sus checks aprobados y su registro propio. El REST hoy permite
+  un trabajo a la vez (409), así que habría que levantar ese límite por feature.
 
 ## Recomendación final (6 lentes)
 
@@ -16,10 +78,11 @@ de XState, no un bus nuevo.
 
 Orden recomendado:
 
-1. **Medir antes de construir** (zoom-out): línea base con `--replicas 1` y prueba de
-   ruido de entrenamientos simultáneos.
+1. **Medir antes de construir** (zoom-out): línea base con `--replicas 1` ~~y prueba de
+   ruido de entrenamientos simultáneos~~ (obsoleta: ya no hay entrenamiento).
 2. **Prerrequisitos** que ya son defectos hoy: costo de llamadas fallidas, tope USD en
    `quedaPresupuesto`, `onError` en `corriendoInterno`, cancelación con `AbortSignal`.
+   **Hechos.**
 3. **Corte mínimo:** `--replicas N` (1 por defecto = comportamiento actual).
 
 ## Estado de los reviewers
@@ -48,11 +111,11 @@ Orden recomendado:
    orquestación por naturaleza y conviene llamarla así.
 3. **Sin bus de eventos propio.** El sistema de actores de XState ya es un bus
    (design, structural, zoom-out). Los sucesos, si se agregan, son tipos de dominio.
-4. **El lanzador son decoradores** sobre `Agente` y `Entrenador`, en el estilo de
+4. **El lanzador son decoradores** sobre `Agente` (y `Entrenador`, que ya no existe), en el estilo de
    `SalidaRecortada` (`src/adaptadores/salida-recortada.ts:4`), compuestos en `src/cli.ts`.
-5. **El entrenamiento se serializa** (las seis lentes): `TIEMPO_SEGUNDOS = 20` es de
-   reloj (`prepare.py:4`).
-6. **El único cambio de puerto justificado es `AbortSignal` en `Agente`** (design,
+5. ~~**El entrenamiento se serializa** (las seis lentes): `TIEMPO_SEGUNDOS = 20` es de
+   reloj (`prepare.py:4`).~~ Obsoleto: no hay entrenamiento.
+6. **El único cambio de puerto justificado es `AbortSignal` en `Agente`** (hecho) (design,
    structural, implementation-readiness). Es un estándar web, no rompe la pureza.
 
 ## Dónde las lentes difieren
@@ -108,12 +171,13 @@ Ver la sección de hallazgos priorizados (B1 a B5, M1 a M9).
 
 ### 5. Corte mínimo viable (consolidado)
 
-**Paso 0, sin código** (zoom-out):
+**Paso 0, sin código** (zoom-out). *Actualizado:* solo la línea base, en iteraciones
+conservadas por USD y por minuto; la prueba de ruido es obsoleta.
 - Línea base: `--replicas 1` con los defaults, 3 corridas.
 - Ruido: entrenar `train.py` sin cambios con K = 2 y 4 simultáneos y medir cuánto se
   mueve `val_loss`. Si supera la ganancia típica de un `keep`, serializar es obligatorio.
 
-**Prerrequisitos** (defectos de hoy, útiles aunque no se paralelice):
+**Prerrequisitos** (defectos de hoy, útiles aunque no se paralelice). *Hechos los cuatro.*
 - `ClaudeCli` conserva `total_cost_usd` también en errores y salidas con código ≠ 0
   (`src/adaptadores/claude-cli.ts:38-40`).
 - `quedaPresupuesto` mira `costoUsd` contra un tope por corrida
@@ -129,10 +193,10 @@ Ver la sección de hallazgos priorizados (B1 a B5, M1 a M9).
 - N máquinas `crearMaquinaInterna` con `Promise.allSettled` y limpieza en `finally` y
   ante SIGINT.
 - Decoradores: `LibroDeGasto(ClaudeCli)` (tope USD compartido), `Semaforo(…, n)`
-  (concurrencia de agentes), `EntrenamientoExclusivo(EntrenadorUv)`.
+  (concurrencia de agentes). ~~`EntrenamientoExclusivo(EntrenadorUv)`~~ ya no aplica.
 - Prefijo por réplica en el log y tabla resumen al final.
 
-**Métrica:** ganancia (`lineaBase − mejor`) por USD y por minuto de reloj, 3 corridas
+**Métrica** (*actualizada:* iteraciones conservadas en lugar de ganancia de `val_loss`)**:** ~~ganancia (`lineaBase − mejor`)~~ conservadas por USD y por minuto de reloj, 3 corridas
 por K ∈ {1, 2, 4}. Seguir solo si K > 1 mejora la ganancia por minuto sin empeorar la
 ganancia por USD más allá de un umbral fijado antes.
 
@@ -143,7 +207,7 @@ externo paralelo, roles por fase, combinar ramas ganadoras.
 
 ## Hallazgos priorizados (Blocker → Major → Nit)
 
-### B1. La comparación justa se rompe con entrenamientos simultáneos (Severity: Blocker)
+### B1. La comparación justa se rompe con entrenamientos simultáneos (Severity: Blocker) — **Estado 2026-11-16: obsoleto**
 * **Lente:** `comprehension`, `codebase-details`
 * **Alcance:** `train.py:19`, `prepare.py:4`, `README.md:14`, `README.md:103`, `program.md:36-37`, `src/nucleo/interno.ts:120-128`, `src/nucleo/externo.ts:47`
 * **Problema:**
@@ -153,7 +217,7 @@ externo paralelo, roles por fase, combinar ramas ganadoras.
   - la `ganancia` entre versiones de `program.md` deja de ser válida.
 * **Recomendación:** `EntrenadorSerializado`/`EntrenadorExclusivo` con concurrencia 1. Documentarlo en el README.
 
-### B2. El working tree raíz y `program.md` son compartidos (Severity: Blocker si se paraleliza el loop externo)
+### B2. El working tree raíz y `program.md` son compartidos (Severity: Blocker si se paraleliza el loop externo) — **Estado 2026-11-16: vigente**
 * **Lente:** `comprehension`, `codebase-details`
 * **Alcance:** `src/nucleo/encargos.ts:48`, `src/nucleo/externo.ts:99`, `src/nucleo/externo.ts:121-123`, `src/nucleo/externo.ts:157`
 * **Problema:**
@@ -164,7 +228,7 @@ externo paralelo, roles por fase, combinar ramas ganadoras.
   - el hill-climbing en paralelo no define de qué versión parte cada propuesta.
 * **Recomendación:** dejarlo fuera del corte mínimo. Si se aborda después, cada candidato de `program.md` necesita su propio worktree y hay que definir la semántica del hill-climbing en paralelo.
 
-### B3. Un worktree por réplica, sin excepciones (Severity: Blocker)
+### B3. Un worktree por réplica, sin excepciones (Severity: Blocker) — **Estado 2026-11-16: vigente**
 * **Lente:** `comprehension` (`codebase-details` coincide)
 * **Alcance:** `src/adaptadores/repositorio-git.ts:18-30`, `src/nucleo/interno.ts:83-91`
 * **Problema:**
@@ -173,7 +237,7 @@ externo paralelo, roles por fase, combinar ramas ganadoras.
   - `descartar()` (`reset --hard` + `clean -fdq`) borra el trabajo del otro.
 * **Recomendación:** que el lanzador garantice un worktree exclusivo por réplica.
 
-### B4. El alcance se fuga hacia worktrees hermanos (Severity: Blocker con concurrencia)
+### B4. El alcance se fuga hacia worktrees hermanos (Severity: Blocker con concurrencia) — **Estado 2026-11-16: vigente, más amplio**
 * **Lente:** `codebase-details`
 * **Alcance:** `src/adaptadores/repositorio-git.ts:67`, `.gitignore:8`, `src/nucleo/externo.ts:110`
 * **Problema:**
@@ -183,13 +247,13 @@ externo paralelo, roles por fase, combinar ramas ganadoras.
   - hoy no pasa porque el worktree se quita antes de proponer, pero con concurrencia sí pasa.
 * **Recomendación:** crear los worktrees fuera de la raíz del repo.
 
-### B5. Coreografiar procesos de agente contradice el contrato del README (Severity: Blocker conceptual)
+### B5. Coreografiar procesos de agente contradice el contrato del README (Severity: Blocker conceptual) — **Estado 2026-11-16: vigente**
 * **Lente:** `comprehension`
 * **Alcance:** `README.md:3-5`, `README.md:93-106`
 * **Problema:** si los agentes `claude -p` reaccionan a eventos, la secuencia de fases deja de estar en la máquina. Eso invalida "el ciclo lo corre la máquina" y la sección "Lo que la máquina garantiza".
 * **Recomendación:** la coreografía va entre actores XState, nunca entre procesos de agente.
 
-### M1. El costo queda subcontado y no hay tope global (Severity: Major)
+### M1. El costo queda subcontado y no hay tope global (Severity: Major) — **Estado 2026-11-16: parcial**
 * **Lente:** `comprehension`, `codebase-details`
 * **Alcance:** `src/adaptadores/claude-cli.ts:35`, `src/adaptadores/claude-cli.ts:40`, `src/nucleo/interno.ts:51`, `src/nucleo/interno.ts:151`, `src/nucleo/interno.ts:155`, `src/nucleo/interno.ts:178-181`, `src/nucleo/externo.ts:147`, `src/cli.ts:55`
 * **Problema:**
@@ -200,7 +264,7 @@ externo paralelo, roles por fase, combinar ramas ganadoras.
   - un tope aplicado después de la llamada permite sobregirar hasta N × `KL_PRESUPUESTO_AGENTE_USD`.
 * **Recomendación:** que `ClaudeCli` reporte el costo también cuando falla. Un libro de costos compartido que reserve antes de lanzar. Nueva variable `KL_PRESUPUESTO_TOTAL_USD`.
 
-### M2. No hay cancelación (Severity: Major)
+### M2. No hay cancelación (Severity: Major) — **Estado 2026-11-16: resuelto**
 * **Lente:** `comprehension`, `codebase-details`
 * **Alcance:** `src/nucleo/puertos.ts:29-31`, `src/nucleo/interno.ts:77-79`, `src/adaptadores/claude-cli.ts:35`
 * **Problema:**
@@ -209,7 +273,7 @@ externo paralelo, roles por fase, combinar ramas ganadoras.
   - detener una máquina no mata `claude -p`.
 * **Recomendación:** extender el puerto con `AbortSignal` y propagarlo hasta `execFile`.
 
-### M3. Quedan worktrees y ramas huérfanos (Severity: Major)
+### M3. Quedan worktrees y ramas huérfanos (Severity: Major) — **Estado 2026-11-16: parcial**
 * **Lente:** `comprehension`, `codebase-details`
 * **Alcance:** `src/adaptadores/repositorio-git.ts:66-70`, `src/nucleo/externo.ts:103-112`, `src/cli.ts:62`
 * **Problema:**
@@ -219,7 +283,7 @@ externo paralelo, roles por fase, combinar ramas ganadoras.
   - no hay `prune` ni inventario.
 * **Recomendación:** `quitar` en un `finally` y ante SIGINT, más un inventario o `prune` al arrancar.
 
-### M4. Las etiquetas de rama chocan (Severity: Major)
+### M4. Las etiquetas de rama chocan (Severity: Major) — **Estado 2026-11-16: vigente**
 * **Lente:** `codebase-details` (comprehension lo menciona al reusar `--etiqueta`)
 * **Alcance:** `src/cli.ts:27`, `src/adaptadores/repositorio-git.ts:68`, `src/nucleo/externo.ts:89`
 * **Problema:**
@@ -228,13 +292,13 @@ externo paralelo, roles por fase, combinar ramas ganadoras.
   - `${prefijo}-v${version}` supone una sola tanda por versión.
 * **Recomendación:** etiquetas `<prefijo>-r<k>` únicas por réplica.
 
-### M5. Los procesos no se matan por completo (Severity: Major)
+### M5. Los procesos no se matan por completo (Severity: Major) — **Estado 2026-11-16: resuelto**
 * **Lente:** `codebase-details`
 * **Alcance:** `src/adaptadores/entrenador-uv.ts:21`
 * **Problema:** el timeout manda SIGKILL solo a `uv` y puede dejar `python` vivo.
 * **Recomendación:** grupos de procesos (`detached` + kill del grupo) en el lanzador.
 
-### M6. La bitácora es concurrente y las filas no identifican a la réplica (Severity: Major)
+### M6. La bitácora es concurrente y las filas no identifican a la réplica (Severity: Major) — **Estado 2026-11-16: vigente**
 * **Lente:** `comprehension`, `codebase-details`
 * **Alcance:** `src/adaptadores/bitacora-tsv.ts:16-19`, `src/nucleo/interno.ts:46`, `src/nucleo/interno.ts:100`, `src/nucleo/interno.ts:212`, `program.md:51`, `meta-prompt.md:9`
 * **Problema:**
@@ -246,7 +310,7 @@ externo paralelo, roles por fase, combinar ramas ganadoras.
   - una bitácora por worktree y un único escritor para `historial.tsv`;
   - si se agrega una columna, actualizar `program.md:51` (fuera del bloque protegido) y `meta-prompt.md:9`.
 
-### M7. `--minutos` es un tope blando y el tiempo en cola se descuenta (Severity: Major)
+### M7. `--minutos` es un tope blando y el tiempo en cola se descuenta (Severity: Major) — **Estado 2026-11-16: vigente**
 * **Lente:** `comprehension` (Nit/Major), `codebase-details`
 * **Alcance:** `src/nucleo/interno.ts:94-95`, `src/cli.ts:56`
 * **Problema:**
@@ -255,7 +319,7 @@ externo paralelo, roles por fase, combinar ramas ganadoras.
   - la espera en el semáforo consume el reloj del loop.
 * **Recomendación:** definir si el límite del lanzador corta procesos en vuelo o solo impide lanzar nuevos, y si `--minutos` es por réplica o global.
 
-### M8. Falta observabilidad y correlación (Severity: Major)
+### M8. Falta observabilidad y correlación (Severity: Major) — **Estado 2026-11-16: parcial**
 * **Lente:** `comprehension`, `codebase-details`
 * **Alcance:** `src/cli.ts:39-43`
 * **Problema:**
@@ -268,36 +332,36 @@ externo paralelo, roles por fase, combinar ramas ganadoras.
   - log `.trabajo/<etiqueta>/eventos.jsonl`, o la ruta equivalente fuera de la raíz;
   - un comando `status` o `inspect` y un resumen final.
 
-### M9. "Multiagente" es ambiguo y faltan flags (Severity: Major)
+### M9. "Multiagente" es ambiguo y faltan flags (Severity: Major) — **Estado 2026-11-16: parcial**
 * **Lente:** `comprehension`
 * **Alcance:** `README.md:39-49`
 * **Problema:** el concepto admite tres lecturas, y no se distinguen los topes por llamada de los globales.
 * **Recomendación:** elegir y nombrar la lectura (ver la pregunta 1). Documentar `--replicas`, `--concurrencia`, `KL_PRESUPUESTO_TOTAL_USD` y la semántica de `--minutos`.
 
-### N1. "Tanda" no está definida (Severity: Nit)
+### N1. "Tanda" no está definida (Severity: Nit) — **Estado 2026-11-16: resuelto**
 * **Lente:** `comprehension`
 * **Alcance:** `README.md:9-10`
 * **Recomendación:** definirla antes de que se confunda con "lote de réplicas".
 
-### N2. "Evento" choca con el `event` de XState (Severity: Nit)
+### N2. "Evento" choca con el `event` de XState (Severity: Nit) — **Estado 2026-11-16: vigente**
 * **Lente:** `comprehension`
 * **Recomendación:** declarar que se emiten con `emit` o usar "hito".
 
-### N3. Convención de flags (Severity: Nit)
+### N3. Convención de flags (Severity: Nit) — **Estado 2026-11-16: vigente**
 * **Lente:** `comprehension`
 * **Recomendación:** mantener sustantivos en plural en español.
 
-### N4. `execFileSync` en `RepositorioGit` (Severity: Nit)
+### N4. `execFileSync` en `RepositorioGit` (Severity: Nit) — **Estado 2026-11-16: vigente**
 * **Lente:** `codebase-details`
 * **Alcance:** `src/adaptadores/repositorio-git.ts:81`
 * **Problema:** bloquea el event loop. Como efecto lateral favorable, serializa los `git worktree add` dentro del proceso.
 
-### N5. Timeouts de 60 s bajo carga (Severity: Nit)
+### N5. Timeouts de 60 s bajo carga (Severity: Nit) — **Estado 2026-11-16: cambia**
 * **Lente:** `codebase-details`
 * **Alcance:** `src/cli.ts:58-59`
 * **Problema:** pueden producir un `crash` falso cuando hay concurrencia.
 
-### N6. `run.log` es legible para el investigador (Severity: Nit, preexistente)
+### N6. `run.log` es legible para el investigador (Severity: Nit, preexistente) — **Estado 2026-11-16: obsoleto**
 * **Lente:** `codebase-details`
 * **Alcance:** `src/adaptadores/entrenador-uv.ts:16`, `program.md:21`
 * **Problema:** contradice lo que declara `program.md`. Ya ocurre hoy, sin concurrencia.
@@ -316,7 +380,7 @@ Cambios de severidad respecto a las dos primeras lentes:
 
 Hallazgos nuevos:
 
-### B6. El loop gira en vacío al agotar el presupuesto (Severity: Blocker)
+### B6. El loop gira en vacío al agotar el presupuesto (Severity: Blocker) — **Estado 2026-11-16: resuelto**
 * **Reviewer Lens:** `design`, `structural`, `zoom-out`
 * **Affected Scope:** `src/nucleo/interno.ts:94-95,155,180`
 * **Problema:** `quedaPresupuesto` ignora `costoUsd`. Si un decorador de tope lanza
@@ -324,7 +388,7 @@ Hallazgos nuevos:
 * **Requisito:** guarda de costo en `quedaPresupuesto` y fila en la bitácora cuando
   falla el agente.
 
-### M10. `corriendoInterno` no tiene `onError` (Severity: Major)
+### M10. `corriendoInterno` no tiene `onError` (Severity: Major) — **Estado 2026-11-16: resuelto**
 * **Reviewer Lens:** `implementation-readiness`, `design`
 * **Affected Scope:** `src/nucleo/externo.ts:93-113`
 * **Problema:** un error del interno deja el worktree colgado y la máquina externa sin
@@ -333,14 +397,14 @@ Hallazgos nuevos:
   `results.tsv` y la rama con los `keep` (`src/cli.ts:62-65`). Para réplicas, decidir
   si se conserva o se archiva.
 
-### M11. Cambiar el esquema de `results.tsv` desalinea archivos existentes (Severity: Major)
+### M11. Cambiar el esquema de `results.tsv` desalinea archivos existentes (Severity: Major) — **Estado 2026-11-16: vigente, ya ocurrió**
 * **Reviewer Lens:** `implementation-readiness`
 * **Affected Scope:** `src/nucleo/interno.ts:46`, `src/adaptadores/bitacora-tsv.ts:16`
 * **Problema:** `BitacoraTsv` no reescribe el encabezado de un archivo existente.
 * **Requisito:** no agregar columnas en el corte; la réplica se identifica por el
   archivo, no por una columna.
 
-### M12. Git concurrente compite por locks (Severity: Major)
+### M12. Git concurrente compite por locks (Severity: Major) — **Estado 2026-11-16: vigente**
 * **Reviewer Lens:** `implementation-readiness`, `design`, `structural`
 * **Affected Scope:** `src/adaptadores/repositorio-git.ts:66-69,81`
 * **Problema:** `worktree add` y commits concurrentes chocan en `index.lock` y
@@ -348,19 +412,19 @@ Hallazgos nuevos:
 * **Requisito:** crear worktrees en serie, etiquetas únicas y un comando de limpieza
   idempotente.
 
-### N7. Reloj implícito (Severity: Nit)
+### N7. Reloj implícito (Severity: Nit) — **Estado 2026-11-16: vigente**
 * **Reviewer Lens:** `structural`
 * **Affected Scope:** `src/nucleo/interno.ts:95,108`
 * **Problema:** `Date.now()` en el núcleo. Un puerto `Reloj` solo hace falta cuando los
   tests de tiempo lo exijan.
 
-### N8. `Encargo` sin identidad y `Fase` cerrada (Severity: Nit)
+### N8. `Encargo` sin identidad y `Fase` cerrada (Severity: Nit) — **Estado 2026-11-16: vigente**
 * **Reviewer Lens:** `structural`, `implementation-readiness`
 * **Affected Scope:** `src/nucleo/puertos.ts:4,7-13`
 * **Problema:** dos agentes en la misma fase no se distinguen. Irrelevante con réplicas
   (cada una tiene su máquina); necesario con roles.
 
-### N9. Binario `claude` fijo y grep de pureza corto (Severity: Nit)
+### N9. Binario `claude` fijo y grep de pureza corto (Severity: Nit) — **Estado 2026-11-16: parcial**
 * **Reviewer Lens:** `structural`
 * **Affected Scope:** `src/adaptadores/claude-cli.ts:22`, `README.md:138`
 * **Problema:** recibir el binario por constructor permite probar la cancelación con un
@@ -392,7 +456,15 @@ Hallazgos nuevos:
 2. Tope USD: global por corrida o por réplica; al llegar, ¿se cortan procesos en vuelo o
    solo no se lanzan nuevos? ¿Qué status queda (`cancelado`)?
 3. Semántica de `--minutos`: por réplica o global.
-4. Si el paso 0 muestra ruido bajo, ¿se acepta entrenar en paralelo o se serializa igual?
+4. ~~Si el paso 0 muestra ruido bajo, ¿se acepta entrenar en paralelo o se serializa igual?~~
+   Obsoleta: no hay entrenamiento.
 5. Destino de los worktrees de réplicas perdedoras: conservar, archivar o quitar.
 6. Si B4 se confirma (el agente puede editar fuera de su cwd), dónde ubicar los
    worktrees fuera de la raíz.
+7. *(nueva)* Sin `val_loss`, ¿qué gana una réplica? Contar iteraciones conservadas premia
+   cambios chicos, y las ramas de distintas réplicas no se pueden comparar ni combinar
+   automáticamente. Opciones: elegir la de más `keep`, pedir revisión humana o dejar
+   todas las ramas y no elegir.
+8. *(nueva)* ¿«Multiagente» pasa a ser varias features en paralelo (un worktree por
+   feature, ya aislado) en lugar de réplicas del loop interno? Exige permitir más de un
+   trabajo simultáneo en el REST, con un límite por feature.
