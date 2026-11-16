@@ -1,6 +1,6 @@
 # Plugin `kl`
 
-Skills de Claude Code del flujo por feature de karpathy-loop. `src/cli.ts` las carga con
+Skills de Claude Code del flujo por feature de karpathy-loop. `src/composicion.ts` las carga con
 `claude -p --plugin-dir plugin/` solo durante cada llamada: no se instalan ni aparecen en
 otras sesiones.
 

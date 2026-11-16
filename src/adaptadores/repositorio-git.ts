@@ -16,7 +16,7 @@ export class RepositorioGit implements Repositorio {
   }
 
   tocados(): string[] {
-    // Sin trim: la primera línea empieza con espacio (" M train.py") y la columna importa.
+    // Sin trim: la primera línea empieza con espacio (" M codigo.py") y la columna importa.
     // -uall: archivo por archivo, no la carpeta nueva entera.
     return this.#crudo("status", "--porcelain", "-uall")
       .split("\n")

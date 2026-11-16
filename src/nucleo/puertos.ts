@@ -1,5 +1,5 @@
 // Puertos: lo único que el núcleo sabe del mundo exterior. Los adaptadores viven en
-// src/adaptadores/ y se cablean en src/cli.ts.
+// src/adaptadores/ y se cablean en src/main.ts.
 
 export type Fase = "checks" | "build" | "programa" | "write-checks" | "feature-builder" | "auto-loop";
 
@@ -20,10 +20,6 @@ export interface Respuesta {
 export interface ResultadoChecks {
   ok: boolean;
   salida: string;
-}
-
-export interface Medicion {
-  valLoss: number;
 }
 
 /** Un agente que falló después de gastar: el costo viaja con el error para que no se pierda. */
@@ -61,10 +57,6 @@ export interface Puntaje {
 export interface Evaluador {
   /** Corre cada check de `carpeta` (relativa a `dir`); `signal` corta el check en curso. */
   puntaje(dir: string, carpeta: string, signal: AbortSignal): Promise<Puntaje>;
-}
-
-export interface Entrenador {
-  medicion(dir: string, signal: AbortSignal): Promise<Medicion>;
 }
 
 /** Registro de filas TSV con encabezado. */

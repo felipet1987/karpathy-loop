@@ -1,14 +1,17 @@
 import { parseArgs } from "node:util";
 import { CorridaCancelada, Rechazo, type Corridas } from "../../nucleo/corridas.ts";
 import type { Features } from "../../nucleo/features.ts";
+import { nombre, opcionesAprobar, opcionesExterna, opcionesInterna, UsoInvalido } from "./validacion.ts";
 
 export const USO = `Uso:
-  node src/cli.ts interno [--iteraciones 10] [--minutos 15] [--tope-usd X] [--etiqueta X]
-  node src/cli.ts externo [--versiones 4] [--iteraciones 8] [--minutos 10] [--tope-usd X] [--etiqueta X]
+  node src/main.ts interno [--iteraciones 10] [--minutos 15] [--tope-usd X] [--etiqueta X]
+  node src/main.ts externo [--versiones 4] [--iteraciones 8] [--minutos 10] [--tope-usd X] [--etiqueta X]
 
-  node src/cli.ts feature checks <id> [--repo .]
-  node src/cli.ts feature aprobar <id> [--repo .] [--rondas 5] [--tope-usd X]
-  node src/cli.ts feature mejorar [--repo .]
+  node src/main.ts feature checks <id> [--repo .]
+  node src/main.ts feature aprobar <id> [--repo .] [--rondas 5] [--tope-usd X]
+  node src/main.ts feature mejorar [--repo .]
+
+  node src/main.ts servir [--puerto 8787]        API REST en 127.0.0.1 (ver README)
 
 --tope-usd: gasto máximo por corrida (por tanda en externo); sin flag, sin tope.
 --etiqueta: nombre del worktree y de la rama; por defecto, la fecha AAAAMMDDhhmm (UTC).
@@ -20,8 +23,6 @@ export interface Terminal {
   log(texto: string): void;
   error(texto: string): void;
 }
-
-class UsoInvalido extends Error {}
 
 /** Flags que acepta cada comando; cualquier otro es uso inválido. */
 const FLAGS: Record<string, readonly string[]> = {
@@ -96,8 +97,8 @@ export class Consola {
     if (!permitidos) throw new UsoInvalido(comando ? `Comando desconocido: ${comando}` : "Falta el comando.");
     const sobrantes = Object.keys(values).filter((f) => !permitidos.includes(f));
     if (sobrantes.length > 0) throw new UsoInvalido(`--${sobrantes[0]} no aplica a ${comando}.`);
-    const topeUsd = positivo("tope-usd", values["tope-usd"], Infinity);
     const repo = values.repo ?? ".";
+    const valores = { ...values, topeUsd: values["tope-usd"] };
 
     if (comando.startsWith("feature")) {
       const resto = positionals.slice(2);
@@ -106,58 +107,12 @@ export class Consola {
         return this.#features.mejorar({ repo }, interrupcion);
       }
       if (resto.length !== 1) throw new UsoInvalido(`Falta el <id> de la feature (${comando} <id>).`);
-      const id = nombre("id", resto[0]);
-      if (comando === "feature checks") return this.#features.checks({ repo, id }, interrupcion);
-      return this.#features.aprobar(
-        { repo, id, rondas: entero("rondas", values.rondas, 5), topeUsd },
-        aviso,
-        interrupcion,
-      );
+      if (comando === "feature checks") return this.#features.checks({ repo, id: nombre("id", resto[0]) }, interrupcion);
+      return this.#features.aprobar(opcionesAprobar(repo, resto[0], valores), aviso, interrupcion);
     }
 
     if (positionals.length !== 1) throw new UsoInvalido(`Argumento de más: ${positionals[1]}`);
-    const etiqueta = nombre("etiqueta", values.etiqueta ?? new Date().toISOString().slice(0, 16).replace(/[-:T]/g, ""));
-    if (comando === "interno") {
-      return this.#corridas.interna(
-        {
-          etiqueta,
-          iteraciones: entero("iteraciones", values.iteraciones, 10),
-          minutos: positivo("minutos", values.minutos, 15),
-          topeUsd,
-        },
-        aviso,
-        interrupcion,
-      );
-    }
-    return this.#corridas.externa(
-      {
-        etiqueta,
-        versiones: entero("versiones", values.versiones, 4),
-        iteracionesPorTanda: entero("iteraciones", values.iteraciones, 8),
-        minutosPorTanda: positivo("minutos", values.minutos, 10),
-        topeUsdPorTanda: topeUsd,
-      },
-      aviso,
-      interrupcion,
-    );
+    if (comando === "interno") return this.#corridas.interna(opcionesInterna(valores), aviso, interrupcion);
+    return this.#corridas.externa(opcionesExterna(valores), aviso, interrupcion);
   }
-}
-
-/** Nombre seguro para una rama y una carpeta: sin barras, sin `..` y sin empezar con punto. */
-function nombre(flag: string, valor: string): string {
-  if (!/^[\w-][\w.-]*$/.test(valor) || valor.includes("..")) throw new UsoInvalido(`${flag} inválido: ${valor}`);
-  return valor;
-}
-
-function positivo(nombre: string, valor: string | undefined, porDefecto: number): number {
-  if (valor === undefined) return porDefecto;
-  const n = Number(valor);
-  if (!Number.isFinite(n) || n <= 0) throw new UsoInvalido(`--${nombre} tiene que ser un número mayor que 0: ${valor}`);
-  return n;
-}
-
-function entero(nombre: string, valor: string | undefined, porDefecto: number): number {
-  const n = positivo(nombre, valor, porDefecto);
-  if (!Number.isInteger(n)) throw new UsoInvalido(`--${nombre} tiene que ser entero: ${valor}`);
-  return n;
 }

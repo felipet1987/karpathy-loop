@@ -11,7 +11,7 @@ function corridasFalsas(respuesta: () => Promise<unknown> = async () => ({ ok: t
   const corridas = {
     interna: async (opciones: unknown, aviso: (e: string) => void) => {
       llamadas.push({ caso: "interna", opciones });
-      aviso('"lineaBase"');
+      aviso('"escribiendoChecks"');
       return respuesta();
     },
     externa: async (opciones: unknown) => {
@@ -43,7 +43,7 @@ test("Consola: interno con valores por defecto, avisos y salida en JSON", async 
   assert.deepEqual(llamadas, [
     { caso: "interna", opciones: { etiqueta: "e1", iteraciones: 10, minutos: 15, topeUsd: Infinity } },
   ]);
-  assert.match(log[0], /\] "lineaBase"$/);
+  assert.match(log[0], /\] "escribiendoChecks"$/);
   assert.deepEqual(JSON.parse(log.at(-1)!), { ok: true });
 });
 

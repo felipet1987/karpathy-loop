@@ -1,6 +1,5 @@
-// Composition root: único lugar donde se construyen los adaptadores y se cablean al núcleo.
-// La interfaz de línea de comandos vive en src/adaptadores/entrada/consola.ts (`--help` no
-// existe: sin argumentos imprime el uso).
+// Composition root: único lugar donde se construyen los adaptadores de salida y se cablean al
+// núcleo. El punto de entrada (src/main.ts) solo elige el adaptador de entrada.
 // Cada iteración llama a Claude Code (`claude -p`) al menos dos veces y consume cuota.
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -10,8 +9,6 @@ import { BitacoraTsv } from "./adaptadores/bitacora-tsv.ts";
 import { ChecksPorArchivo } from "./adaptadores/checks-por-archivo.ts";
 import { ChecksUv } from "./adaptadores/checks-uv.ts";
 import { ClaudeCli } from "./adaptadores/claude-cli.ts";
-import { Consola } from "./adaptadores/entrada/consola.ts";
-import { EntrenadorUv } from "./adaptadores/entrenador-uv.ts";
 import { RepositorioGit } from "./adaptadores/repositorio-git.ts";
 import { SalidaRecortada } from "./adaptadores/salida-recortada.ts";
 import { crearCorridas } from "./nucleo/corridas.ts";
@@ -36,10 +33,9 @@ const agente = new ClaudeCli(
   [plugin],
 );
 
-const corridas = crearCorridas({
+export const corridas = crearCorridas({
   agente,
   checks: new SalidaRecortada(new ChecksUv(60_000), 4_000), // lo recortado vuelve al agente
-  entrenador: new EntrenadorUv(60_000), // 20 s de presupuesto + arranque; más que esto es crash
   repositorio: new RepositorioGit(raiz),
   bitacoraDeCorrida: (worktree) =>
     new BitacoraTsv(join(worktree.directorio(), "results.tsv"), ENCABEZADO_RESULTADOS),
@@ -48,7 +44,7 @@ const corridas = crearCorridas({
 });
 
 // Flujo por feature sobre cualquier repo (--repo). Registro de rondas y reportes en <repo>/.kl/.
-const features = crearFeatures({
+export const features = crearFeatures({
   agente,
   evaluador: new ChecksPorArchivo(5 * 60_000, 2_000),
   repositorio: (ruta) => new RepositorioGit(toplevel(ruta)),
@@ -61,10 +57,3 @@ const features = crearFeatures({
   },
 });
 
-// Los agentes y el entrenamiento corren en su propio grupo de procesos, así que Ctrl-C no
-// les llega: la señal aborta la corrida y cada adaptador mata su grupo.
-const corte = new AbortController();
-process.once("SIGINT", () => corte.abort());
-process.once("SIGTERM", () => corte.abort());
-
-process.exitCode = await new Consola(corridas, features, console).codigo(process.argv.slice(2), corte.signal);

@@ -1,4 +1,6 @@
-// Loop externo: optimiza program.md corriendo el loop interno por tandas.
+// Loop externo: mejora program.md corriendo el loop interno por tandas. Cada versión se juzga
+// por cuántas iteraciones conservó su tanda; si supera a la mejor, su estado es «mejora» y se
+// commitea; si no, «sin_mejora» y se restaura la anterior.
 //
 //   preparando → corriendoInterno → decidiendo → conservando | descartando → siguiente
 //        ↑                                                                    │
@@ -9,7 +11,7 @@ import { crearMaquinaInterna, type PuertosInterno, type SalidaInterno } from "./
 import { costoDe, type Bitacora, type Repositorio, type Respuesta } from "./puertos.ts";
 
 export interface PuertosExterno extends PuertosInterno {
-  repositorio: Repositorio; // raíz: program.md, meta-prompt.md, prepare.py y train.py
+  repositorio: Repositorio; // raíz: program.md y meta-prompt.md
   historial: Bitacora; // meta/historial.tsv
   resultados: (version: number) => Bitacora; // meta/resultados-v<n>.tsv
 }
@@ -23,13 +25,16 @@ export interface EntradaExterno {
   topeUsdPorTanda: number; // Infinity = sin tope
 }
 
+/** Estado de mejora de cada versión de program.md. */
+export type EstadoVersion = "mejora" | "sin_mejora";
+
 export interface SalidaExterno {
-  mejorGanancia: number;
-  historial: { version: number; ganancia: number; estado: "conservar" | "descartar" }[];
+  mejorConservados: number;
+  historial: { version: number; conservados: number; estado: EstadoVersion }[];
   costoUsd: number;
 }
 
-export const ENCABEZADO_HISTORIAL = ["version", "ganancia", "estado"] as const;
+export const ENCABEZADO_HISTORIAL = ["version", "conservados", "estado"] as const;
 
 const PROGRAMA = "program.md";
 
@@ -37,7 +42,7 @@ interface Contexto extends EntradaExterno {
   version: number;
   worktree: Repositorio | null;
   resultado: SalidaInterno | null;
-  mejorGanancia: number;
+  mejorConservados: number;
   historial: SalidaExterno["historial"];
   costoUsd: number;
 }
@@ -45,14 +50,12 @@ interface Contexto extends EntradaExterno {
 const PROTEGIDO = /<!-- protegido -->[\s\S]*?<!-- fin protegido -->/;
 export const bloqueProtegido = (texto: string) => texto.match(PROTEGIDO)?.[0] ?? null;
 
-const ganancia = (r: SalidaInterno) => (Number.isFinite(r.lineaBase - r.mejor) ? r.lineaBase - r.mejor : 0);
-
 export function crearMaquinaExterna(puertos: PuertosExterno) {
   const { repositorio } = puertos;
-  const anotar = (c: Contexto, estado: "conservar" | "descartar") => {
-    const g = ganancia(c.resultado!);
-    puertos.historial.anotar([`v${c.version}`, g.toFixed(6), estado]);
-    return { historial: [...c.historial, { version: c.version, ganancia: g, estado }] };
+  const anotar = (c: Contexto, estado: EstadoVersion) => {
+    const conservados = c.resultado!.conservados;
+    puertos.historial.anotar([`v${c.version}`, String(conservados), estado]);
+    return { historial: [...c.historial, { version: c.version, conservados, estado }] };
   };
 
   return setup({
@@ -72,7 +75,7 @@ export function crearMaquinaExterna(puertos: PuertosExterno) {
       ),
     },
     guards: {
-      superaMejor: ({ context }) => ganancia(context.resultado!) > context.mejorGanancia,
+      superaMejor: ({ context }) => context.resultado!.conservados > context.mejorConservados,
       quedanVersiones: ({ context }) => context.version < context.versiones,
     },
   }).createMachine({
@@ -82,7 +85,7 @@ export function crearMaquinaExterna(puertos: PuertosExterno) {
       version: 1,
       worktree: null,
       resultado: null,
-      mejorGanancia: 0,
+      mejorConservados: 0,
       historial: [],
       costoUsd: 0,
     }),
@@ -115,11 +118,11 @@ export function crearMaquinaExterna(puertos: PuertosExterno) {
               ({ context }) => repositorio.quitar(context.worktree!),
             ],
           },
-          // Si el interno falla (git, disco), la tanda cuenta como ganancia 0 y se descarta.
+          // Si el interno falla (git, disco), la tanda cuenta como 0 conservados: sin mejora.
           onError: {
             target: "descartando",
             actions: [
-              assign({ resultado: { lineaBase: Infinity, mejor: Infinity, iteraciones: 0, costoUsd: 0 } }),
+              assign({ resultado: { conservados: 0, iteraciones: 0, costoUsd: 0 } }),
               ({ context }) => repositorio.quitar(context.worktree!),
             ],
           },
@@ -132,18 +135,21 @@ export function crearMaquinaExterna(puertos: PuertosExterno) {
         entry: [
           ({ context }) => {
             if (repositorio.tocados().includes(PROGRAMA)) {
-              const g = ganancia(context.resultado!).toFixed(6);
-              repositorio.confirmar(`program.md v${context.version}: ganancia ${g}`, [PROGRAMA]);
+              const n = context.resultado!.conservados;
+              repositorio.confirmar(`program.md v${context.version}: mejora, ${n} conservados`, [PROGRAMA]);
             }
           },
-          assign(({ context }) => ({ mejorGanancia: ganancia(context.resultado!), ...anotar(context, "conservar") })),
+          assign(({ context }) => ({
+            mejorConservados: context.resultado!.conservados,
+            ...anotar(context, "mejora"),
+          })),
         ],
         always: "siguiente",
       },
       descartando: {
         entry: [
           () => repositorio.restaurar(PROGRAMA),
-          assign(({ context }) => anotar(context, "descartar")),
+          assign(({ context }) => anotar(context, "sin_mejora")),
         ],
         always: "siguiente",
       },
@@ -179,7 +185,7 @@ export function crearMaquinaExterna(puertos: PuertosExterno) {
       terminado: { type: "final" },
     },
     output: ({ context }) => ({
-      mejorGanancia: context.mejorGanancia,
+      mejorConservados: context.mejorConservados,
       historial: context.historial,
       costoUsd: context.costoUsd,
     }),

@@ -2,40 +2,40 @@
 // ejecuta el agente (claude -p) es del adaptador.
 import type { Encargo } from "./puertos.ts";
 
-/** Lo único que el agente puede tocar: train.py al construir, checks/ al escribir checks. */
-export const EDITABLE = "train.py";
+/** Carpeta de checks: la escribe la fase 1 y queda bloqueada en la fase 2. */
 export const CHECKS = "checks/";
 
 const LECTURA = ["Read", "Glob", "Grep"];
 
-/** Fase 1 (write checks): decide el experimento y escribe en checks/ lo que el cambio debe cumplir. */
+/** Fase 1 (write checks): decide el cambio y escribe en checks/ lo que el cambio debe cumplir. */
 export function encargoChecks(dir: string, programa: string, historial: string): Encargo {
   return {
     fase: "checks",
     systemPrompt: programa,
     prompt:
-      `Historial de experimentos (results.tsv):\n\n${historial || "(vacío)"}\n\n` +
-      `Fase 1 de 3 (write checks). Decide UN cambio a ${EDITABLE} que creas que bajará val_loss, ` +
-      `pero NO edites ${EDITABLE} todavía: escribe o ajusta checks en ${CHECKS} que verifiquen ` +
-      `que el cambio quedó bien hecho. Responde solo con una línea que describa el cambio.`,
+      `Historial de iteraciones (results.tsv):\n\n${historial || "(vacío)"}\n\n` +
+      `Fase 1 de 3 (write checks). Decide UN cambio al proyecto, según el objetivo de tus ` +
+      `instrucciones, pero NO lo implementes todavía: escribe o ajusta checks en ${CHECKS} que ` +
+      `verifiquen que el cambio quedó bien hecho. No toques nada fuera de ${CHECKS}. ` +
+      `Responde solo con una línea que describa el cambio.`,
     cwd: dir,
     herramientas: [...LECTURA, "Write", "Edit"],
   };
 }
 
-/** Fase 2 (build): implementa el cambio en train.py; si hubo fallo, trae la salida de los checks. */
+/** Fase 2 (build): implementa el cambio; si hubo fallo, trae la salida de los checks. */
 export function encargoBuild(dir: string, programa: string, descripcion: string, fallo: string | null): Encargo {
   const anterior = fallo
-    ? `\n\nEl intento anterior no pasó los checks. Salida:\n\n${fallo}\n\nCorrige ${EDITABLE}.`
+    ? `\n\nEl intento anterior no pasó los checks. Salida:\n\n${fallo}\n\nCorrige el código.`
     : "";
   return {
     fase: "build",
     systemPrompt: programa,
     prompt:
-      `Fase 2 de 3 (build). Implementa en ${EDITABLE}: ${descripcion}\n` +
+      `Fase 2 de 3 (build). Implementa: ${descripcion}\n` +
       `Los checks de ${CHECKS} tienen que pasar; no los modifiques.${anterior}`,
     cwd: dir,
-    herramientas: [...LECTURA, "Edit"],
+    herramientas: [...LECTURA, "Write", "Edit"],
   };
 }
 

@@ -1,23 +1,23 @@
 // Loop interno: la máquina corre el ciclo; el agente escribe checks y construye el cambio.
 //
-//   lineaBase → escribiendoChecks → aislandoChecks → construyendo → verificando → corriendoChecks
-//                    ↑                                    ↑                              │ pasan
-//                    │                                    └──── fallan (quedan intentos) ┤
-//                    │                                                                   ↓
-//                    └── siguiente (¿queda presupuesto?) ← conservando | revirtiendo ← entrenando
+//   siguiente → escribiendoChecks → aislandoChecks → construyendo → verificando → corriendoChecks
+//       ↑                                                ↑                             │ pasan
+//       │                                                └─── fallan (quedan intentos) ┤
+//       │                                                                              ↓
+//       └──────────────────── checksFallidos (sin intentos) | conservando (commit) ←───┘
 //
-// Todo efecto pasa por los puertos: Agente, Checks y Entrenador llegan a la fábrica;
-// Repositorio y Bitacora llegan en el input, porque cambian con cada worktree.
+// No hay entrenamiento: un cambio cuyos checks pasan se conserva. El resultado de la corrida
+// es cuántas iteraciones se conservaron; el loop externo lo usa para comparar program.md.
+// Todo efecto pasa por los puertos: Agente y Checks llegan a la fábrica; Repositorio y
+// Bitacora llegan en el input, porque cambian con cada worktree.
 import { assign, fromPromise, setup } from "xstate";
-import { CHECKS, EDITABLE, descripcionDe, encargoBuild, encargoChecks } from "./encargos.ts";
+import { CHECKS, descripcionDe, encargoBuild, encargoChecks } from "./encargos.ts";
 import {
   costoDe,
   type Agente,
   type Bitacora,
   type Checks,
   type Encargo,
-  type Entrenador,
-  type Medicion,
   type Repositorio,
   type Respuesta,
   type ResultadoChecks,
@@ -26,11 +26,10 @@ import {
 export interface PuertosInterno {
   agente: Agente;
   checks: Checks;
-  entrenador: Entrenador;
 }
 
 export interface EntradaInterno {
-  repositorio: Repositorio; // worktree donde se experimenta
+  repositorio: Repositorio; // worktree donde se trabaja
   bitacora: Bitacora; // results.tsv de esta corrida
   programa: string; // program.md vigente (lo entrega el loop externo)
   maxIteraciones: number;
@@ -39,15 +38,14 @@ export interface EntradaInterno {
 }
 
 export interface SalidaInterno {
-  lineaBase: number;
-  mejor: number;
+  conservados: number; // iteraciones cuyos checks pasaron y quedaron commiteadas
   iteraciones: number;
   costoUsd: number;
 }
 
-export const ENCABEZADO_RESULTADOS = ["commit", "val_loss", "status", "description"] as const;
+export const ENCABEZADO_RESULTADOS = ["commit", "status", "description"] as const;
 
-export type Estado = "keep" | "discard" | "crash" | "fuera_de_alcance" | "checks_fallidos" | "fallo_agente";
+export type Estado = "keep" | "fuera_de_alcance" | "checks_fallidos" | "fallo_agente";
 
 /** Intentos de construcción por iteración antes de rendirse con los checks. */
 export const INTENTOS_BUILD = 3;
@@ -56,22 +54,14 @@ interface Contexto extends EntradaInterno {
   finEn: number;
   iteracion: number;
   intento: number;
-  lineaBase: number;
-  mejor: number;
+  conservados: number;
   costoUsd: number;
   descripcion: string;
   fallo: string | null; // salida de los checks del intento anterior
-  medicion: Medicion | null;
 }
 
-function registrar(
-  c: Contexto,
-  estado: Estado,
-  valLoss: number,
-  commit = c.repositorio.commitCorto(),
-  descripcion = c.descripcion,
-) {
-  c.bitacora.anotar([commit, valLoss.toFixed(6), estado, descripcion]);
+function registrar(c: Contexto, estado: Estado, commit = "-", descripcion = c.descripcion) {
+  c.bitacora.anotar([commit, estado, descripcion]);
 }
 
 export function crearMaquinaInterna(puertos: PuertosInterno) {
@@ -84,7 +74,6 @@ export function crearMaquinaInterna(puertos: PuertosInterno) {
     actors: {
       agente: fromPromise<Respuesta, Encargo>(({ input, signal }) => puertos.agente.respuesta(input, signal)),
       checks: fromPromise<ResultadoChecks, string>(({ input }) => puertos.checks.resultado(input)),
-      entrenar: fromPromise<Medicion, string>(({ input, signal }) => puertos.entrenador.medicion(input, signal)),
     },
     guards: {
       // La fase de checks solo tocó checks/, y algo tocó.
@@ -92,20 +81,18 @@ export function crearMaquinaInterna(puertos: PuertosInterno) {
         const tocados = context.repositorio.tocados();
         return tocados.length > 0 && tocados.every((r) => r.startsWith(CHECKS));
       },
-      // La fase de construcción solo tocó train.py (los checks ya están en el index).
+      // La fase de construcción cambió algo y no tocó checks/ (los checks ya están en el index).
       buildEnAlcance: ({ context }) => {
         const tocados = context.repositorio.tocadosFueraDelIndex();
-        return tocados.length === 1 && tocados[0] === EDITABLE;
+        return tocados.length > 0 && !tocados.some((r) => r.startsWith(CHECKS));
       },
       quedanIntentos: ({ context }) => context.intento < INTENTOS_BUILD,
-      mejoro: ({ context }) => context.medicion!.valLoss < context.mejor,
       quedaPresupuesto: ({ context }) =>
         context.iteracion < context.maxIteraciones &&
         Date.now() < context.finEn &&
         context.costoUsd < context.topeUsd,
     },
     actions: {
-      descartar: ({ context }) => context.repositorio.descartar(),
       // Lo gastado por una llamada fallida también cuenta.
       sumarCostoDelFallo: assign(({ context, event }) => ({
         costoUsd: context.costoUsd + costoDe((event as { error?: unknown }).error),
@@ -114,11 +101,11 @@ export function crearMaquinaInterna(puertos: PuertosInterno) {
       falloDeAgente: ({ context, event }) => {
         const error = (event as { error?: unknown }).error;
         const motivo = error instanceof Error ? error.message : String(error);
-        registrar(context, "fallo_agente", Infinity, "-", context.descripcion || motivo);
+        registrar(context, "fallo_agente", "-", context.descripcion || motivo);
         context.repositorio.descartar();
       },
       fueraDeAlcance: ({ context }) => {
-        registrar(context, "fuera_de_alcance", Infinity, "-");
+        registrar(context, "fuera_de_alcance");
         context.repositorio.descartar();
       },
     },
@@ -129,37 +116,20 @@ export function crearMaquinaInterna(puertos: PuertosInterno) {
       finEn: Date.now() + input.minutos * 60_000,
       iteracion: 0,
       intento: 0,
-      lineaBase: Infinity,
-      mejor: Infinity,
+      conservados: 0,
       costoUsd: 0,
-      descripcion: "linea base",
+      descripcion: "",
       fallo: null,
-      medicion: null,
     }),
-    initial: "lineaBase",
+    initial: "siguiente",
     states: {
-      lineaBase: {
-        invoke: {
-          src: "entrenar",
-          input: ({ context }) => context.repositorio.directorio(),
-          onDone: {
-            target: "siguiente",
-            actions: [
-              assign(({ event }) => ({ lineaBase: event.output.valLoss, mejor: event.output.valLoss })),
-              ({ context, event }) => registrar(context, "keep", event.output.valLoss),
-            ],
-          },
-          onError: { target: "sinLineaBase" },
-        },
-      },
-      // 1. Write checks: el agente decide el experimento y escribe en checks/ lo que debe cumplir.
+      // 1. Write checks: el agente decide el cambio y escribe en checks/ lo que debe cumplir.
       escribiendoChecks: {
         entry: assign(({ context }) => ({
           iteracion: context.iteracion + 1,
           intento: 0,
           descripcion: "",
           fallo: null,
-          medicion: null,
         })),
         invoke: {
           src: "agente",
@@ -187,7 +157,7 @@ export function crearMaquinaInterna(puertos: PuertosInterno) {
           { target: "siguiente", actions: "fueraDeAlcance" },
         ],
       },
-      // 2. Build: el agente cambia train.py; si viene de un fallo, recibe la salida de los checks.
+      // 2. Build: el agente implementa el cambio; si viene de un fallo, recibe la salida de los checks.
       construyendo: {
         entry: assign(({ context }) => ({ intento: context.intento + 1 })),
         invoke: {
@@ -207,17 +177,13 @@ export function crearMaquinaInterna(puertos: PuertosInterno) {
           { target: "siguiente", actions: "fueraDeAlcance" },
         ],
       },
-      // 3. Pass checks: los corre la máquina. Si pasan, commit de train.py + checks/ y a entrenar.
+      // 3. Pass checks: los corre la máquina. Si pasan, se conserva; si no, se reintenta el build.
       corriendoChecks: {
         invoke: {
           src: "checks",
           input: ({ context }) => context.repositorio.directorio(),
           onDone: [
-            {
-              guard: ({ event }) => event.output.ok,
-              target: "entrenando",
-              actions: ({ context }) => context.repositorio.confirmar(context.descripcion, [EDITABLE, CHECKS]),
-            },
+            { guard: ({ event }) => event.output.ok, target: "conservando" },
             {
               guard: "quedanIntentos",
               target: "construyendo",
@@ -230,51 +196,28 @@ export function crearMaquinaInterna(puertos: PuertosInterno) {
       },
       checksFallidos: {
         entry: ({ context }) => {
-          registrar(context, "checks_fallidos", Infinity, "-");
+          registrar(context, "checks_fallidos");
           context.repositorio.descartar();
         },
         always: "siguiente",
       },
-      entrenando: {
-        invoke: {
-          src: "entrenar",
-          input: ({ context }) => context.repositorio.directorio(),
-          onDone: { target: "evaluando", actions: assign(({ event }) => ({ medicion: event.output })) },
-          onError: {
-            target: "siguiente",
-            actions: ({ context }) => {
-              registrar(context, "crash", Infinity);
-              context.repositorio.revertirUltimo();
-            },
-          },
-        },
-      },
-      evaluando: {
-        always: [{ guard: "mejoro", target: "conservando" }, { target: "revirtiendo" }],
-      },
       conservando: {
         entry: [
-          ({ context }) => registrar(context, "keep", context.medicion!.valLoss),
-          assign(({ context }) => ({ mejor: context.medicion!.valLoss })),
+          ({ context }) => {
+            context.repositorio.confirmar(context.descripcion, ["."]);
+            registrar(context, "keep", context.repositorio.commitCorto());
+          },
+          assign(({ context }) => ({ conservados: context.conservados + 1 })),
         ],
-        always: "siguiente",
-      },
-      revirtiendo: {
-        entry: ({ context }) => {
-          registrar(context, "discard", context.medicion!.valLoss);
-          context.repositorio.revertirUltimo();
-        },
         always: "siguiente",
       },
       siguiente: {
         always: [{ guard: "quedaPresupuesto", target: "escribiendoChecks" }, { target: "terminado" }],
       },
-      sinLineaBase: { type: "final" },
       terminado: { type: "final" },
     },
     output: ({ context }) => ({
-      lineaBase: context.lineaBase,
-      mejor: context.mejor,
+      conservados: context.conservados,
       iteraciones: context.iteracion,
       costoUsd: context.costoUsd,
     }),

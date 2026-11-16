@@ -8,8 +8,9 @@
     "node": ">=24"
   },
   "scripts": {
-    "interno": "node src/cli.ts interno",
-    "externo": "node src/cli.ts externo",
+    "interno": "node src/main.ts interno",
+    "externo": "node src/main.ts externo",
+    "servir": "node src/main.ts servir",
     "test": "node --test \"test/*.test.ts\"",
     "typecheck": "tsc --noEmit"
   },
