@@ -38,7 +38,12 @@ npm test                                   # núcleo con fakes y adaptadores loc
 npm run typecheck
 node src/cli.ts interno --iteraciones 10   # un loop interno real
 node src/cli.ts externo --versiones 4 --iteraciones 8
+node src/cli.ts feature checks <id> --repo ../otro-repo     # flujo por feature
+node src/cli.ts feature aprobar <id> --repo ../otro-repo --rondas 5
+node src/cli.ts feature mejorar --repo ../otro-repo
 ```
+
+El flujo por feature se explica en «Flujo por feature»; sus skills, en `plugin/README.md`.
 
 | Flag            | `interno`        | `externo`        | Qué controla                          |
 |-----------------|------------------|------------------|---------------------------------------|
@@ -149,7 +154,8 @@ Estados de ronda: `base`, `conservado`, `deshecho`, `completa`, `fuera_de_alcanc
 
 Cada archivo de `checks/<id>/` con extensión `.py`, `.sh`, `.js`, `.mjs` o `.ts` es un check
 y pasa si sale con 0 (`.py` usa `uv run python` si el repo tiene `pyproject.toml`). Las
-skills están en `plugin/skills/` y se cargan con `--plugin-dir` solo en cada `claude -p`.
+skills están en `plugin/skills/` y se cargan con `--plugin-dir` solo en cada `claude -p`
+(detalle en `plugin/README.md`).
 Conviene agregar `.trabajo/` y `.kl/` al `.gitignore` del repo destino.
 
 ## Arquitectura
