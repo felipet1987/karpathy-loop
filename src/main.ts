@@ -1,5 +1,5 @@
 // Punto de entrada único. Elige el adaptador de entrada:
-//   node src/main.ts servir [--puerto 8787]   → REST (src/adaptadores/entrada/rest.ts)
+//   node src/main.ts servir [--puerto 8787] [--concurrencia 3] → REST (src/adaptadores/entrada/rest.ts)
 //   node src/main.ts <comando> ...            → consola (src/adaptadores/entrada/consola.ts);
 //                                               sin argumentos imprime el uso.
 import { createServer } from "node:http";
@@ -19,15 +19,20 @@ const [comando, ...resto] = process.argv.slice(2);
 
 if (comando === "servir") {
   let puerto: number;
+  let concurrencia: number;
   try {
-    const { values } = parseArgs({ args: resto, options: { puerto: { type: "string" } } });
+    const { values } = parseArgs({
+      args: resto,
+      options: { puerto: { type: "string" }, concurrencia: { type: "string" } },
+    });
     puerto = entero("puerto", values.puerto, 8787);
+    concurrencia = entero("concurrencia", values.concurrencia, 3);
   } catch (e) {
     console.error(`${(e as Error).message}\n\n${USO}`);
     process.exit(2);
   }
   // Solo 127.0.0.1: no hay autenticación y cada trabajo llama a `claude -p` y consume cuota.
-  const rest = new Rest(corridas, features);
+  const rest = new Rest(corridas, features, concurrencia); // features en paralelo, hasta `concurrencia`
   const servidor = createServer(rest.manejador());
   corte.signal.addEventListener("abort", () => {
     rest.cancelarTodo();

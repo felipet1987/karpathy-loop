@@ -465,6 +465,7 @@ Hallazgos nuevos:
    cambios chicos, y las ramas de distintas réplicas no se pueden comparar ni combinar
    automáticamente. Opciones: elegir la de más `keep`, pedir revisión humana o dejar
    todas las ramas y no elegir.
-8. *(nueva)* ¿«Multiagente» pasa a ser varias features en paralelo (un worktree por
+8. **Decidida (2026-11-16): features en paralelo.** ~~¿«Multiagente» pasa a ser varias features en paralelo (un worktree por
    feature, ya aislado) en lugar de réplicas del loop interno? Exige permitir más de un
-   trabajo simultáneo en el REST, con un límite por feature.
+   trabajo simultáneo en el REST, con un límite por feature.~~ Implementado en el REST:
+   un trabajo por recurso (feature, `mejorar` por repo, corridas) y `--concurrencia`.

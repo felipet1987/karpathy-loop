@@ -208,3 +208,44 @@ test("auto-loop: conserva un cambio a program.md y revierte si toca otra cosa", 
   assert.match(readFileSync(join(raiz, "features.md"), "utf8"), /## saludo/);
   assert.ok(existsSync(join(raiz, "suelto.txt")));
 });
+
+test("features en paralelo: dos aprobar a la vez sobre el mismo repo no se pisan", async () => {
+  const raiz = repoDePrueba();
+  writeFileSync(join(raiz, "features.md"), "# F\n\n## uno\nArchivo UNO.\n\n## dos\nArchivo DOS.\n");
+  git(raiz, "commit", "-qam", "dos features");
+  const pausa = () => new Promise((r) => setTimeout(r, 5));
+  const agente: Agente = {
+    async respuesta(e) {
+      await pausa(); // intercala las dos features entre llamadas
+      const id = e.prompt.split(/\s/)[1];
+      const nombreArchivo = id.toUpperCase();
+      if (e.fase === "write-checks") {
+        mkdirSync(join(e.cwd, "checks", id), { recursive: true });
+        writeFileSync(join(e.cwd, "checks", id, "01.sh"), `test -f ${nombreArchivo}\n`);
+        writeFileSync(join(e.cwd, "checks", id, "02.sh"), `grep -q listo ${nombreArchivo}\n`);
+      } else {
+        // Primera ronda: crea el archivo sin "listo" (1/2); segunda: lo completa (2/2).
+        const ruta = join(e.cwd, nombreArchivo);
+        writeFileSync(ruta, existsSync(ruta) ? "listo\n" : "a medias\n");
+      }
+      return { texto: `${e.fase} ${id}`, costoUsd: 0.1 };
+    },
+  };
+  const f = features(raiz, agente);
+  await Promise.all([f.checks({ repo: raiz, id: "uno" }, nunca), f.checks({ repo: raiz, id: "dos" }, nunca)]);
+  const [uno, dos] = await Promise.all(
+    ["uno", "dos"].map((id) => f.aprobar({ repo: raiz, id, rondas: 5, topeUsd: Infinity }, callado, nunca)),
+  );
+  for (const [s, id] of [[uno, "uno"], [dos, "dos"]] as const) {
+    assert.deepEqual({ completa: s.completa, puntaje: s.puntaje, rondas: s.rondas }, { completa: true, puntaje: "2/2", rondas: 2 });
+    const wt = join(raiz, ".trabajo", `feature-${id}`);
+    assert.deepEqual(git(wt, "ls-files").split("\n").filter((r) => r !== ".gitignore" && !r.endsWith(".md")).sort(), [
+      id.toUpperCase(),
+      `checks/${id}/01.sh`,
+      `checks/${id}/02.sh`,
+    ]);
+    assert.equal(git(wt, "status", "--porcelain"), "");
+    assert.equal(readFileSync(join(raiz, ".kl", "rondas", `${id}.tsv`), "utf8").trim().split("\n").length, 4); // encabezado + base + 2
+  }
+  assert.equal(git(raiz, "worktree", "list").split("\n").length, 3);
+});

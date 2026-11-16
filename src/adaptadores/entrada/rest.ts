@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { resolve } from "node:path";
 import { CorridaCancelada, Rechazo, type Corridas } from "../../nucleo/corridas.ts";
 import type { Features } from "../../nucleo/features.ts";
 import { nombre, opcionesAprobar, opcionesExterna, opcionesInterna, UsoInvalido, type Valor } from "./validacion.ts";
@@ -16,16 +17,22 @@ import { nombre, opcionesAprobar, opcionesExterna, opcionesInterna, UsoInvalido,
  *   GET    /trabajos/{n}                 estado, avisos, salida o error
  *   DELETE /trabajos/{n}                 cancela
  *
- * Un trabajo a la vez (409 si hay otro corriendo): las corridas comparten el repo.
+ * Varias features corren en paralelo, cada una en su worktree. Lo que comparte estado es
+ * exclusivo (409 si ya corre): la misma feature, `mejorar` sobre el mismo repo (escribe
+ * program.md en la raíz) y las corridas interna/externa (exigen el repo limpio y commitean en
+ * él). Además hay un tope de trabajos simultáneos (429 si se supera).
  */
 export class Rest {
   readonly #corridas: Corridas;
   readonly #features: Features;
+  readonly #concurrencia: number;
   readonly #trabajos: Map<number, Trabajo>;
 
-  constructor(corridas: Corridas, features: Features) {
+  /** `concurrencia`: máximo de trabajos corriendo a la vez. */
+  constructor(corridas: Corridas, features: Features, concurrencia: number) {
     this.#corridas = corridas;
     this.#features = features;
+    this.#concurrencia = concurrencia;
     this.#trabajos = new Map();
   }
 
@@ -75,35 +82,56 @@ export class Rest {
   /** Traduce la ruta y el cuerpo a un caso de uso; valida antes de lanzar nada. */
   #caso(partes: string[], c: Record<string, Valor>): Caso | undefined {
     const repo = c.repo === undefined ? "." : String(c.repo);
+    const donde = resolve(repo); // "." y la ruta absoluta del mismo repo son el mismo recurso
     const [a, b, accion] = partes;
     if (a === "corridas" && partes.length === 2 && b === "interna") {
       const o = opcionesInterna(c);
-      return (aviso, signal) => this.#corridas.interna(o, aviso, signal);
+      return { recurso: "corridas", correr: (aviso, signal) => this.#corridas.interna(o, aviso, signal) };
     }
     if (a === "corridas" && partes.length === 2 && b === "externa") {
       const o = opcionesExterna(c);
-      return (aviso, signal) => this.#corridas.externa(o, aviso, signal);
+      return { recurso: "corridas", correr: (aviso, signal) => this.#corridas.externa(o, aviso, signal) };
     }
     if (a === "features" && partes.length === 2 && b === "mejorar") {
-      return (_, signal) => this.#features.mejorar({ repo }, signal);
+      return { recurso: `mejorar ${donde}`, correr: (_, signal) => this.#features.mejorar({ repo }, signal) };
     }
     if (a === "features" && partes.length === 3 && accion === "checks") {
       const id = nombre("id", b);
-      return (_, signal) => this.#features.checks({ repo, id }, signal);
+      return {
+        recurso: `feature ${donde} ${id}`,
+        correr: (_, signal) => this.#features.checks({ repo, id }, signal),
+      };
     }
     if (a === "features" && partes.length === 3 && accion === "aprobar") {
       const o = opcionesAprobar(repo, b, c);
-      return (aviso, signal) => this.#features.aprobar(o, aviso, signal);
+      return {
+        recurso: `feature ${donde} ${o.id}`,
+        correr: (aviso, signal) => this.#features.aprobar(o, aviso, signal),
+      };
     }
     return undefined;
   }
 
+  #siguienteId(): number {
+    return Math.max(0, ...this.#trabajos.keys()) + 1;
+  }
+
   async #lanzar(ruta: string, caso: Caso): Promise<Respuesta> {
-    const enCurso = [...this.#trabajos.values()].find((t) => t.estado === "corriendo");
-    if (enCurso) return { codigo: 409, cuerpo: { error: "ya hay un trabajo corriendo", trabajo: `/trabajos/${enCurso.id}` } };
+    const corriendo = [...this.#trabajos.values()].filter((t) => t.estado === "corriendo");
+    const mismo = corriendo.find((t) => t.recurso === caso.recurso);
+    if (mismo) {
+      return {
+        codigo: 409,
+        cuerpo: { error: `ya hay un trabajo sobre ${caso.recurso}`, trabajo: `/trabajos/${mismo.id}` },
+      };
+    }
+    if (corriendo.length >= this.#concurrencia) {
+      return { codigo: 429, cuerpo: { error: `ya corren ${corriendo.length} trabajos (máximo ${this.#concurrencia})` } };
+    }
     const t: Trabajo = {
-      id: this.#trabajos.size + 1,
+      id: this.#siguienteId(),
       ruta,
+      recurso: caso.recurso,
       estado: "corriendo",
       inicio: new Date().toISOString(),
       avisos: [],
@@ -115,7 +143,7 @@ export class Rest {
       t.avisos.push({ hora: new Date().toISOString(), estado });
       if (t.avisos.length > 200) t.avisos.shift();
     };
-    t.fin = caso(aviso, t.corte.signal).then(
+    t.fin = caso.correr(aviso, t.corte.signal).then(
       (salida) => cerrar(t, "terminado", { salida }),
       (e: unknown) => {
         const error = e instanceof Error ? e.message : String(e);
@@ -135,11 +163,16 @@ export class Rest {
   }
 }
 
-type Caso = (aviso: (estado: string) => void, signal: AbortSignal) => Promise<unknown>;
+/** Un caso de uso listo para correr y el recurso que ocupa mientras corre. */
+interface Caso {
+  recurso: string;
+  correr: (aviso: (estado: string) => void, signal: AbortSignal) => Promise<unknown>;
+}
 
 interface Trabajo {
   id: number;
   ruta: string;
+  recurso: string;
   estado: "corriendo" | "terminado" | "cancelado" | "rechazado" | "fallido";
   inicio: string;
   fin_en?: string;

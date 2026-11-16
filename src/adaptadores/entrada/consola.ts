@@ -11,7 +11,7 @@ export const USO = `Uso:
   node src/main.ts feature aprobar <id> [--repo .] [--rondas 5] [--tope-usd X]
   node src/main.ts feature mejorar [--repo .]
 
-  node src/main.ts servir [--puerto 8787]        API REST en 127.0.0.1 (ver README)
+  node src/main.ts servir [--puerto 8787] [--concurrencia 3]   API REST en 127.0.0.1 (ver README)
 
 --tope-usd: gasto máximo por corrida (por tanda en externo); sin flag, sin tope.
 --etiqueta: nombre del worktree y de la rama; por defecto, la fecha AAAAMMDDhhmm (UTC).

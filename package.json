@@ -2,6 +2,7 @@
   "name": "karpathy-loop",
   "version": "0.1.0",
   "description": "Loop interno y loop externo de autoresearch como máquinas XState; el agente solo propone cambios",
+  "license": "MIT",
   "private": true,
   "type": "module",
   "engines": {

@@ -11,6 +11,34 @@ Hay dos modos:
 - **Flujo por feature** sobre cualquier repo: una persona pide una feature, aprueba sus
   checks y la máquina construye hasta que pasan.
 
+## Los loops en una mirada
+
+Hay dos niveles de loop: uno que **hace cambios** y otro que **mejora las instrucciones**
+del primero. Los dos modos los repiten con distinto origen del pedido:
+
+| | Modo autoresearch | Modo feature |
+|---|---|---|
+| Quién decide qué construir | el agente, leyendo el historial | una persona, en `features.md` |
+| Quién aprueba los checks | nadie: la máquina exige que solo toquen `checks/` | la persona, antes de construir |
+| Loop que hace cambios | **loop interno**: iteraciones write checks → build → pass checks | **rondas**: el builder intenta hasta que pasan todos los checks |
+| Qué se conserva | cada iteración cuyos checks pasan | cada ronda que sube el puntaje (checks que pasan) |
+| Loop que mejora instrucciones | **loop externo**: prueba versiones de `program.md` corriendo tandas del interno | **auto-loop**: lee el registro de rondas y ajusta `program.md` |
+| Cómo se juzga la mejora | la versión que conserva más iteraciones (`mejora` / `sin_mejora`) | no se mide: un cambio por llamada, revisable en git |
+
+```
+              ┌──────────── loop externo / auto-loop ────────────┐
+              │  lee resultados → reescribe program.md            │
+              └───────────────┬─────────────────▲────────────────┘
+                     program.md (system prompt)  │ results.tsv / rondas
+              ┌───────────────▼─────────────────┴────────────────┐
+              │  loop interno / rondas                           │
+              │  write checks → build → pass checks → conservar   │
+              └───────────────────────────────────────────────────┘
+```
+
+En los dos niveles la máquina XState decide y el agente propone: el agente no puede hacer
+commits, correr checks ni tocar fuera de su fase.
+
 ## Loop interno
 
 El loop interno mejora el proyecto de a un cambio por iteración. Cada iteración tiene tres
@@ -151,7 +179,7 @@ seguimiento: las máquinas hacen `checkout` y `reset`.
 ## Uso por REST
 
 ```bash
-node src/main.ts servir --puerto 8787        # escucha solo en 127.0.0.1
+node src/main.ts servir --puerto 8787 --concurrencia 3   # escucha solo en 127.0.0.1
 ```
 
 Las corridas duran minutos, así que cada POST crea un **trabajo** asíncrono y responde
@@ -169,9 +197,21 @@ Las corridas duran minutos, así que cada POST crea un **trabajo** asíncrono y 
 | `GET /trabajos/{n}`            | estado, avisos de la máquina, salida o error           |
 | `DELETE /trabajos/{n}`         | cancela: aborta la máquina y mata los procesos          |
 
-Estados de un trabajo: `corriendo`, `terminado`, `cancelado`, `rechazado`, `fallido`. Respuestas de
-error: `400` pedido inválido, `409` ya hay un trabajo corriendo (uno a la vez, porque
-comparten el repo), `422` rechazo (repo con cambios, feature inexistente), `404` y `405`.
+**Features en paralelo.** Corren varios trabajos a la vez, hasta `--concurrencia` (3 por
+defecto). Cada feature trabaja en su propio worktree, así que distintas features avanzan en
+paralelo sin pisarse. Lo que comparte estado es exclusivo:
+
+| Recurso                         | Trabajos que lo ocupan                         |
+|---------------------------------|------------------------------------------------|
+| `feature <repo> <id>`           | `checks` y `aprobar` de esa feature            |
+| `mejorar <repo>`                | `mejorar` (escribe `program.md` en la raíz)    |
+| `corridas`                      | `interna` y `externa` (exigen el repo limpio)  |
+
+Estados de un trabajo: `corriendo`, `terminado`, `cancelado`, `rechazado`, `fallido`.
+Respuestas de error: `400` pedido inválido, `409` el recurso ya está ocupado (indica qué
+trabajo lo ocupa), `422` rechazo (repo con cambios, feature inexistente), `429` se alcanzó
+`--concurrencia`, `404` y `405`. Cada trabajo tiene su propio `--tope-usd` (`topeUsd`); no
+hay tope de gasto compartido entre trabajos.
 
 ```bash
 curl -si -X POST localhost:8787/corridas/interna -d '{"iteraciones": 3, "topeUsd": 2}'
@@ -180,6 +220,133 @@ curl -s -X DELETE localhost:8787/trabajos/1
 ```
 
 No hay autenticación: cualquier proceso local puede lanzar corridas que consumen cuota.
+
+## Tutoriales
+
+### 1. Primera feature por consola
+
+Un repo de ejemplo con una feature: un script que saluda.
+
+```bash
+mkdir -p ~/demo-saludo && cd ~/demo-saludo && git init -q
+cat > features.md <<'MD'
+# Features
+
+## saludo
+Un script `hola.sh` en la raíz que, con un argumento NOMBRE, imprime `hola NOMBRE`;
+sin argumento imprime `hola mundo`.
+MD
+printf '# Programa\n\n- Código en bash simple.\n' > program.md
+printf '.trabajo/\n.kl/\n' > .gitignore
+git add -A && git commit -qm base
+```
+
+Para probar barato, se usa Haiku y un tope por llamada:
+
+```bash
+export KL_MODELO=claude-haiku-5-5 KL_PRESUPUESTO_AGENTE_USD=0.3
+cd /ruta/a/karpathy-loop
+```
+
+1. **Escribir los checks.** Crea el worktree y deja los checks sin commitear:
+
+   ```bash
+   node src/main.ts feature checks saludo --repo ~/demo-saludo
+   ```
+
+   La salida JSON trae `worktree` y la lista de `archivos` (por ejemplo,
+   `checks/saludo/01-sin-argumento-imprime-hola-mundo.sh`).
+
+2. **Revisarlos.** Se leen y, si hace falta, se editan en
+   `~/demo-saludo/.trabajo/feature-saludo/checks/saludo/`. Cada uno sale con 0 si el
+   comportamiento se cumple. Hoy fallan todos: `hola.sh` todavía no existe.
+
+3. **Aprobar y construir.** Commitea los checks y corre las rondas:
+
+   ```bash
+   node src/main.ts feature aprobar saludo --repo ~/demo-saludo --rondas 3 --tope-usd 1
+   ```
+
+   Los avisos muestran `puntuandoBase → construyendo → corriendoChecks → …`. Termina con
+   `"completa": true` y `"puntaje": "3/3"` cuando pasan todos.
+
+4. **Leer el resultado.** El código quedó en la rama `feature/saludo`:
+
+   ```bash
+   git -C ~/demo-saludo/.trabajo/feature-saludo log --oneline
+   cat ~/demo-saludo/.kl/reportes/saludo.md        # errores y arreglos por ronda
+   cat ~/demo-saludo/.kl/rondas/saludo.tsv         # registro de rondas
+   ```
+
+5. **Mejorar las instrucciones.** Con varias features hechas, el auto-loop busca hábitos
+   repetidos en el registro y ajusta `program.md`:
+
+   ```bash
+   node src/main.ts feature mejorar --repo ~/demo-saludo
+   ```
+
+   Responde `conservado` (commit de `program.md`), `revertido` (tocó otro archivo) o
+   `sin_cambios` (no encontró nada que corregir).
+
+Para integrar la feature: `git -C ~/demo-saludo merge feature/saludo`. Para descartarla:
+`git -C ~/demo-saludo worktree remove .trabajo/feature-saludo` y borrar la rama.
+
+### 2. Varias features en paralelo por REST
+
+Con el repo del tutorial 1 y dos features más en `features.md` (`## despedida` y
+`## ayuda`, commiteadas):
+
+```bash
+node src/main.ts servir --concurrencia 3 &
+
+R='{"repo": "'$HOME'/demo-saludo"}'
+curl -s -X POST localhost:8787/features/despedida/checks -d "$R"
+curl -s -X POST localhost:8787/features/ayuda/checks -d "$R"
+curl -s localhost:8787/trabajos | jq '.[] | {id, ruta, estado}'
+```
+
+Las dos corren a la vez, cada una en su worktree. Cuando terminan, se revisan los checks
+como en el paso 2 del tutorial 1 y se aprueban también en paralelo:
+
+```bash
+curl -s -X POST localhost:8787/features/despedida/aprobar -d '{"repo": "'$HOME'/demo-saludo", "rondas": 3, "topeUsd": 1}'
+curl -s -X POST localhost:8787/features/ayuda/aprobar -d '{"repo": "'$HOME'/demo-saludo", "rondas": 3, "topeUsd": 1}'
+curl -s localhost:8787/trabajos/3 | jq '{estado, avisos: [.avisos[].estado], salida}'
+```
+
+Pedir `checks` de `despedida` mientras corre su `aprobar` responde `409` con el trabajo
+que la ocupa. Un trabajo se cancela con `curl -X DELETE localhost:8787/trabajos/3`, que
+mata sus procesos `claude -p` y checks. Ctrl-C en el servidor cancela todos.
+
+### 3. Loop interno y externo sobre un repo propio
+
+`interno` y `externo` trabajan sobre el repo git de la carpeta desde donde se corren y
+leen `program.md` de su raíz (`externo` también `meta-prompt.md`). Se pueden copiar los de
+este repo como punto de partida y adaptar su objetivo:
+
+```bash
+cd ~/mi-proyecto                       # repo git sin cambios pendientes
+cp /ruta/a/karpathy-loop/{program.md,meta-prompt.md} .
+printf '.trabajo/\nmeta/\nresults.tsv\n' >> .gitignore
+git add -A && git commit -qm "instrucciones del loop"
+
+export KL_MODELO=claude-haiku-5-5 KL_PRESUPUESTO_AGENTE_USD=0.3
+node /ruta/a/karpathy-loop/src/main.ts interno --iteraciones 3 --tope-usd 1 --etiqueta prueba
+```
+
+El resultado trae `conservados`, `iteraciones` y `costoUsd`. Las iteraciones conservadas
+están en la rama `autoresearch/prueba` y el detalle, en `.trabajo/prueba/results.tsv`.
+
+Para que el loop externo pruebe versiones de `program.md`:
+
+```bash
+node /ruta/a/karpathy-loop/src/main.ts externo --versiones 3 --iteraciones 3 --tope-usd 1
+cat meta/historial.tsv                 # versión, conservados, mejora | sin_mejora
+git log --oneline -- program.md        # versiones con mejora commiteadas
+```
+
+Cada tanda corre un loop interno completo, así que el costo máximo es aproximadamente
+`versiones × tope-usd`, más las llamadas del meta-agente.
 
 ## Qué deja cada corrida
 
@@ -251,9 +418,13 @@ puerto y se cambia su construcción en `src/composicion.ts`. El núcleo no se to
 | Archivo                     | Qué cubre                                                    |
 |-----------------------------|--------------------------------------------------------------|
 | `test/maquinas.test.ts`     | loops interno y externo con agentes y checks falsos sobre git real: status, reintentos, estado de mejora, bloque protegido, worktrees, cancelación |
-| `test/features.test.ts`     | flujo por feature con checks `.sh` reales: rondas, rechazos, tope de USD y auto-loop |
+| `test/features.test.ts`     | flujo por feature con checks `.sh` reales: rondas, rechazos, tope de USD, auto-loop y dos features en paralelo sobre el mismo repo |
 | `test/consola.test.ts`      | adaptador de consola: flags, defaults, validación y códigos de salida |
-| `test/rest.test.ts`         | adaptador REST sobre un servidor real: 202/409/400/422/404/405, trabajos y cancelación |
+| `test/rest.test.ts`         | adaptador REST sobre un servidor real: trabajos en paralelo, recursos exclusivos (409), concurrencia (429), 400/422/404/405 y cancelación |
 | `test/adaptadores.test.ts`  | `ChecksUv` (necesita `uv`), `SalidaRecortada`, `BitacoraTsv` y `ClaudeCli` con un binario falso |
 
 Ninguno llama a `claude` ni consume cuota.
+
+## Licencia
+
+MIT. Ver `LICENSE`.
